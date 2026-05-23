@@ -7,8 +7,6 @@ import {
 } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
-import "@excalidraw/excalidraw/index.css";
-
 import { parseDsl } from "./dsl/parser";
 import { buildScene } from "./dsl/buildScene";
 import { DEFAULT_CODE } from "./defaultCode";

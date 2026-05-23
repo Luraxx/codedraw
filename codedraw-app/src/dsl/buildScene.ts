@@ -1,6 +1,6 @@
 import dagre from "dagre";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
-import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
+import type { ExcalidrawElement } from "@excalidraw/element/types";
 
 import type { ParseResult, ParsedNode } from "./parser";
 

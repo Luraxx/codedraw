@@ -1,5 +1,5 @@
 import { exportToSvg, exportToBlob } from "@excalidraw/utils/export";
-import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
+import type { ExcalidrawElement } from "@excalidraw/element/types";
 import type { AppState } from "@excalidraw/excalidraw/types";
 
 import { parseDsl } from "./dsl/parser";
