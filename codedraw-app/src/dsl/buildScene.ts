@@ -4,46 +4,71 @@ import type { ExcalidrawElement } from "@excalidraw/element/types";
 
 import type { ParseResult, ParsedNode } from "./parser";
 
-const NODE_WIDTH = 180;
-const NODE_HEIGHT = 80;
-const TEXT_WIDTH = 240;
-const TEXT_HEIGHT = 24;
-
-const nodeSize = (n: ParsedNode) => ({ width: NODE_WIDTH, height: NODE_HEIGHT });
+const DEFAULT_W = 180;
+const DEFAULT_H = 80;
+const TEXT_W = 240;
+const TEXT_H = 24;
 
 /**
- * Build a deterministic ExcalidrawElement[] from a parsed DSL.
- * Uses dagre for hierarchical layout, then hands off to Excalidraw's
- * `convertToExcalidrawElements` which resolves the arrow bindings.
+ * Build deterministic ExcalidrawElement[] from a parsed DSL.
+ *
+ * If at least one node lacks an explicit position, the WHOLE graph is laid out
+ * via dagre (top-down). Otherwise positions from the DSL are used verbatim,
+ * so canvas edits round-trip cleanly through the serializer.
  */
-export const buildScene = (parsed: ParseResult): readonly ExcalidrawElement[] => {
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 80, marginx: 40, marginy: 40 });
-  g.setDefaultEdgeLabel(() => ({}));
+export const buildScene = (
+  parsed: ParseResult,
+): readonly ExcalidrawElement[] => {
+  const needsAutoLayout = parsed.nodes.some(
+    (n) => n.x === undefined || n.y === undefined,
+  );
 
-  for (const n of parsed.nodes) {
-    g.setNode(n.id, nodeSize(n));
-  }
-  for (const e of parsed.edges) {
-    if (g.hasNode(e.from) && g.hasNode(e.to)) {
-      g.setEdge(e.from, e.to);
+  const positions = new Map<string, { x: number; y: number; w: number; h: number }>();
+
+  if (needsAutoLayout && parsed.nodes.length > 0) {
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 80, marginx: 40, marginy: 40 });
+    g.setDefaultEdgeLabel(() => ({}));
+    for (const n of parsed.nodes) {
+      g.setNode(n.id, { width: n.width ?? DEFAULT_W, height: n.height ?? DEFAULT_H });
+    }
+    for (const e of parsed.edges) {
+      if (g.hasNode(e.from) && g.hasNode(e.to)) g.setEdge(e.from, e.to);
+    }
+    dagre.layout(g);
+    for (const n of parsed.nodes) {
+      const w = n.width ?? DEFAULT_W;
+      const h = n.height ?? DEFAULT_H;
+      if (n.x !== undefined && n.y !== undefined) {
+        positions.set(n.id, { x: n.x, y: n.y, w, h });
+      } else {
+        const p = g.node(n.id);
+        positions.set(n.id, { x: p.x - w / 2, y: p.y - h / 2, w, h });
+      }
+    }
+  } else {
+    for (const n of parsed.nodes) {
+      positions.set(n.id, {
+        x: n.x ?? 0,
+        y: n.y ?? 0,
+        w: n.width ?? DEFAULT_W,
+        h: n.height ?? DEFAULT_H,
+      });
     }
   }
-  dagre.layout(g);
 
   type Skel = Parameters<typeof convertToExcalidrawElements>[0][number];
   const skeleton: Skel[] = [];
 
   for (const n of parsed.nodes) {
-    const pos = g.node(n.id);
-    if (!pos) continue;
+    const p = positions.get(n.id)!;
     skeleton.push({
       type: n.shape,
       id: n.id,
-      x: pos.x - NODE_WIDTH / 2,
-      y: pos.y - NODE_HEIGHT / 2,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      x: p.x,
+      y: p.y,
+      width: p.w,
+      height: p.h,
       strokeColor: n.strokeColor ?? "#1e1e1e",
       backgroundColor: n.backgroundColor ?? "transparent",
       fillStyle: n.backgroundColor ? "hachure" : "solid",
@@ -63,17 +88,23 @@ export const buildScene = (parsed: ParseResult): readonly ExcalidrawElement[] =>
     } as Skel);
   }
 
-  // Stand-alone text lines arranged in a column below the graph.
   if (parsed.texts.length > 0) {
-    const graphBounds = g.graph();
-    const baseY = (graphBounds.height ?? 0) + 40;
-    parsed.texts.forEach((t, i) => {
+    // place any text without explicit position below the bounding box
+    const allXs = [...positions.values()].map((p) => p.x);
+    const allYs = [...positions.values()].map((p) => p.y + p.h);
+    const baseX = allXs.length ? Math.min(...allXs) : 0;
+    const baseY = allYs.length ? Math.max(...allYs) + 40 : 0;
+    let cursor = 0;
+    parsed.texts.forEach((t) => {
+      const x = t.x ?? baseX;
+      const y = t.y ?? baseY + cursor * (TEXT_H + 8);
+      if (t.y === undefined) cursor++;
       skeleton.push({
         type: "text",
-        x: 0,
-        y: baseY + i * (TEXT_HEIGHT + 8),
-        width: TEXT_WIDTH,
-        height: TEXT_HEIGHT,
+        x,
+        y,
+        width: TEXT_W,
+        height: TEXT_H,
         text: t.text,
         fontSize: 20,
       } as Skel);

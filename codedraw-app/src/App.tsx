@@ -6,13 +6,15 @@ import {
   WelcomeScreen,
 } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type { ExcalidrawElement } from "@excalidraw/element/types";
 
 import { parseDsl } from "./dsl/parser";
 import { buildScene } from "./dsl/buildScene";
+import { serializeScene } from "./dsl/serialize";
 import { DEFAULT_CODE } from "./defaultCode";
 import "./app.css";
 
-const STORAGE_KEY = "codedraw:source";
+const STORAGE_KEY = "codedraw:source:v2";
 
 const useDebounced = <T,>(value: T, delay: number): T => {
   const [v, setV] = useState(value);
@@ -52,6 +54,19 @@ const useResizableSplit = () => {
   return { width, onMouseDown };
 };
 
+/**
+ * Cheap structural signature for an element array — used to avoid running
+ * the (otherwise harmless but allocating) serializer on every cursor tick.
+ */
+const sceneSignature = (els: readonly ExcalidrawElement[]): string => {
+  let s = "";
+  for (const e of els) {
+    if (e.isDeleted) continue;
+    s += `${e.id}:${e.type}:${e.version}|`;
+  }
+  return s;
+};
+
 const App = () => {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [source, setSource] = useState<string>(() => {
@@ -62,28 +77,70 @@ const App = () => {
     }
   });
 
-  const debounced = useDebounced(source, 150);
-  const parsed = useMemo(() => parseDsl(debounced), [debounced]);
+  // Feedback-loop guards.
+  // When code is applied to the canvas, the next Excalidraw onChange would
+  // serialize the (just-applied) elements back into identical code — we use
+  // the signature compare for that, no flag needed. The flag is only needed
+  // when the canvas writes new code into the editor: Monaco will then fire
+  // onChange, and we must skip rebuilding the scene from that text.
+  const applyingFromCanvas = useRef(false);
+  const lastAppliedSignature = useRef<string>("");
+  const lastSerializedFromCanvas = useRef<string>("");
 
+  const debouncedSource = useDebounced(source, 120);
+
+  // persist
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, source);
     } catch {
-      /* ignore quota errors */
+      /* ignore quota */
     }
   }, [source]);
 
+  // CODE → CANVAS
+  const parsed = useMemo(() => parseDsl(debouncedSource), [debouncedSource]);
   useEffect(() => {
     if (!api) return;
+    if (applyingFromCanvas.current) {
+      // This source change originated from a canvas edit; the canvas is
+      // already in the right state. Just consume the flag.
+      applyingFromCanvas.current = false;
+      return;
+    }
     try {
       const elements = buildScene(parsed);
       api.updateScene({ elements });
-      api.scrollToContent(elements, { fitToContent: true, animate: false });
+      lastAppliedSignature.current = sceneSignature(elements);
+      // also pre-seed the serialized cache so the next onChange tick
+      // (triggered by updateScene itself) is a noop.
+      lastSerializedFromCanvas.current = source;
     } catch (err) {
-      // surface as parse error so user sees what's wrong
       console.error("[codedraw] buildScene failed", err);
     }
-  }, [api, parsed]);
+  }, [api, parsed, source]);
+
+  // CANVAS → CODE
+  const onCanvasChange = useCallback(
+    (elements: readonly ExcalidrawElement[]) => {
+      const sig = sceneSignature(elements);
+      if (sig === lastAppliedSignature.current) return;
+      lastAppliedSignature.current = sig;
+
+      const dsl = serializeScene(elements);
+      // Avoid feedback if the serializer produced the same text we already have.
+      if (dsl === lastSerializedFromCanvas.current) return;
+      lastSerializedFromCanvas.current = dsl;
+
+      // If nothing changed at the source-of-truth level (after normalization)
+      // do not touch Monaco — preserves the user's cursor/selection.
+      if (dsl === source) return;
+
+      applyingFromCanvas.current = true;
+      setSource(dsl);
+    },
+    [source],
+  );
 
   const { width, onMouseDown } = useResizableSplit();
 
@@ -93,7 +150,7 @@ const App = () => {
     <div className="cd-app">
       <header className="cd-header">
         <h1>CodeDraw</h1>
-        <span style={{ opacity: 0.6 }}>code → diagram</span>
+        <span style={{ opacity: 0.6 }}>code ⇄ diagram</span>
         <span className="cd-spacer" />
       </header>
       <div className="cd-split" style={{ ["--editor-width" as any]: width }}>
@@ -126,7 +183,7 @@ const App = () => {
           <Excalidraw
             excalidrawAPI={setApi}
             initialData={{ appState: { viewBackgroundColor: "#ffffff" } }}
-            langCode="de-DE"
+            onChange={onCanvasChange}
             UIOptions={{
               canvasActions: {
                 loadScene: false,
