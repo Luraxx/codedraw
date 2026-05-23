@@ -1,25 +1,33 @@
 /**
- * CodeDraw DSL parser.
+ * CodeDraw DSL — block-structured grammar.
  *
- * Grammar (line-oriented, '#' starts a comment):
+ * Top-level statements:
  *
- *   # Nodes
- *   <id> [<label>]                       -> rectangle
- *   <id> [<label>] (shape)               -> shape ∈ rectangle|ellipse|diamond
- *   <id> [<label>] (shape, #bg)
- *   <id> [<label>] (shape, #bg, #stroke)
- *   <id> [<label>] (shape, @x,y)         -> explicit position (px)
- *   <id> [<label>] (shape, @x,y,w,h)     -> explicit position + size
- *   (tokens inside the parens can appear in any order, separated by commas)
+ *   node <id> { ... }              -> shape (rectangle by default)
+ *   edge <id> -> <id> { ... }      -> arrow bound to nodes
+ *   edge <id> -- <id> { ... }      -> line bound to nodes
+ *   arrow { from: x,y  to: x,y }   -> free arrow (no bindings)
+ *   line  { from: x,y  to: x,y }   -> free line  (no bindings)
+ *   text  { content: "..." }       -> free text
  *
- *   # Edges
- *   <id> -> <id>                         -> arrow
- *   <id> -> <id> : <label>               -> labelled arrow
- *   <id> -- <id> : <label>               -> plain line, no arrowhead
+ * The `{ ... }` block is optional — `node foo` and `edge a -> b` are valid.
  *
- *   # Free text
- *   "free text in quotes"
+ * Block bodies hold `key: value` lines:
  *
+ *   node:   label, shape, fill, stroke, at, size
+ *   edge:   label
+ *   arrow:  from, to, label
+ *   line:   from, to
+ *   text:   content, at, size
+ *
+ * Values:
+ *   "string"            quoted, with \" \\ \n escapes
+ *   ident               bare identifier (e.g. ellipse)
+ *   #rgb / #rrggbb      color
+ *   n[, n[, n[, n]]]    one to four numbers separated by commas
+ *
+ * Comments: lines starting with `#` (after optional whitespace), or trailing
+ * `  # …` (hash preceded by whitespace and followed by space or EOL).
  * IDs match [A-Za-z_][A-Za-z0-9_]*.
  */
 
@@ -46,10 +54,20 @@ export interface ParsedEdge {
   kind: EdgeKind;
 }
 
+export interface ParsedFreeArrow {
+  kind: EdgeKind;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  label?: string;
+}
+
 export interface ParsedText {
   text: string;
   x?: number;
   y?: number;
+  fontSize?: number;
 }
 
 export interface ParseError {
@@ -61,21 +79,17 @@ export interface ParseError {
 export interface ParseResult {
   nodes: ParsedNode[];
   edges: ParsedEdge[];
+  freeArrows: ParsedFreeArrow[];
   texts: ParsedText[];
   errors: ParseError[];
 }
 
-const ID_RE = "[A-Za-z_][A-Za-z0-9_]*";
-const NODE_RE = new RegExp(
-  `^(${ID_RE})\\s*\\[([^\\]]*)\\](?:\\s*\\(([^)]*)\\))?\\s*$`,
-);
-const EDGE_RE = new RegExp(
-  `^(${ID_RE})\\s*(-->|->|--)\\s*(${ID_RE})\\s*(?::\\s*(.*))?$`,
-);
-const TEXT_RE = /^"([^"]*)"(?:\s*\(([^)]*)\))?\s*$/;
-const NUM = "-?\\d+(?:\\.\\d+)?";
-const POS4_RE = new RegExp(`^@(${NUM}),(${NUM}),(${NUM}),(${NUM})$`);
-const POS2_RE = new RegExp(`^@(${NUM}),(${NUM})$`);
+const ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const NODE_HEAD = /^node\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\{)?\s*$/;
+const EDGE_HEAD =
+  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(->|--)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\{)?\s*$/;
+const SIMPLE_HEAD = /^(arrow|line|text)\s*(\{)?\s*$/;
+const KV_RE = /^([A-Za-z_]+)\s*:\s*(.*)$/;
 
 const VALID_SHAPES: ReadonlySet<NodeShape> = new Set([
   "rectangle",
@@ -83,146 +97,302 @@ const VALID_SHAPES: ReadonlySet<NodeShape> = new Set([
   "diamond",
 ]);
 
-type StyleResult = Pick<
-  ParsedNode,
-  "shape" | "backgroundColor" | "strokeColor" | "x" | "y" | "width" | "height"
->;
-
-const parseStyle = (raw: string | undefined): StyleResult => {
-  const out: StyleResult = { shape: "rectangle" };
-  if (!raw) {
-    return out;
-  }
-  for (const part of raw.split(",").map((p) => p.trim()).filter(Boolean)) {
-    // Reassemble position tokens that got split by our naive comma-split.
-    // We re-glue on the fly: if we see '@x' followed by ',y[,w,h]', combine.
-  }
-  // Two-pass: collect tokens, then re-glue '@'-prefixed groups.
-  const tokens = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  const merged: string[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (t.startsWith("@")) {
-      // try to consume up to 3 more numeric neighbours
-      let combined = t;
-      while (
-        i + 1 < tokens.length &&
-        /^-?\d+(?:\.\d+)?$/.test(tokens[i + 1]) &&
-        combined.split(",").length < 4
-      ) {
-        combined += "," + tokens[++i];
-      }
-      merged.push(combined);
-    } else {
-      merged.push(t);
-    }
-  }
-
-  for (const p of merged) {
-    if (VALID_SHAPES.has(p as NodeShape)) {
-      out.shape = p as NodeShape;
-      continue;
-    }
-    if (/^#[0-9a-fA-F]{3,8}$/.test(p)) {
-      if (!out.backgroundColor) {
-        out.backgroundColor = p;
-      } else if (!out.strokeColor) {
-        out.strokeColor = p;
-      }
-      continue;
-    }
-    const m4 = POS4_RE.exec(p);
-    if (m4) {
-      out.x = Number(m4[1]);
-      out.y = Number(m4[2]);
-      out.width = Number(m4[3]);
-      out.height = Number(m4[4]);
-      continue;
-    }
-    const m2 = POS2_RE.exec(p);
-    if (m2) {
-      out.x = Number(m2[1]);
-      out.y = Number(m2[2]);
-      continue;
-    }
-  }
+const stripComment = (s: string): string => {
+  // remove `  # …` trailing comments (hash preceded by whitespace, followed by space or EOL)
+  let out = s.replace(/\s+#(\s.*|$)/, "");
+  if (/^\s*#/.test(out)) out = "";
   return out;
 };
 
-const parseTextPos = (raw: string | undefined): { x?: number; y?: number } => {
-  if (!raw) return {};
-  for (const p of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
-    // accept full @x,y in one token after our split? Better: glue manually.
-  }
-  // Same gluing trick as parseStyle, scoped for `@x,y` only.
-  const tokens = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  for (let i = 0; i < tokens.length; i++) {
-    if (
-      tokens[i].startsWith("@") &&
-      i + 1 < tokens.length &&
-      /^-?\d+(?:\.\d+)?$/.test(tokens[i + 1])
-    ) {
-      const m = POS2_RE.exec(`${tokens[i]},${tokens[i + 1]}`);
-      if (m) return { x: Number(m[1]), y: Number(m[2]) };
+type Value =
+  | { kind: "string"; value: string }
+  | { kind: "ident"; value: string }
+  | { kind: "color"; value: string }
+  | { kind: "numbers"; value: number[] };
+
+const parseString = (raw: string): string | null => {
+  if (raw[0] !== '"') return null;
+  let i = 1;
+  let out = "";
+  while (i < raw.length) {
+    const c = raw[i];
+    if (c === '"') return out;
+    if (c === "\\" && i + 1 < raw.length) {
+      const n = raw[i + 1];
+      out += n === "n" ? "\n" : n;
+      i += 2;
+      continue;
     }
+    out += c;
+    i++;
   }
-  return {};
+  return null;
 };
 
-export const parseDsl = (source: string): ParseResult => {
-  const result: ParseResult = { nodes: [], edges: [], texts: [], errors: [] };
-  const seen = new Map<string, number>();
-  const lines = source.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
+const parseValue = (raw: string): Value | null => {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed[0] === '"') {
+    const s = parseString(trimmed);
+    return s === null ? null : { kind: "string", value: s };
+  }
+  if (/^#[0-9a-fA-F]{3,8}$/.test(trimmed)) {
+    return { kind: "color", value: trimmed };
+  }
+  if (/^-?\d/.test(trimmed)) {
+    const parts = trimmed.split(",").map((p) => p.trim());
+    const nums: number[] = [];
+    for (const p of parts) {
+      if (!/^-?\d+(\.\d+)?$/.test(p)) return null;
+      nums.push(Number(p));
+    }
+    return { kind: "numbers", value: nums };
+  }
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+    return { kind: "ident", value: trimmed };
+  }
+  return null;
+};
+
+interface BlockBody {
+  entries: Map<string, Value>;
+  errors: { line: number; message: string; raw: string }[];
+}
+
+const parseBlock = (
+  lines: string[],
+  startIdx: number,
+): { body: BlockBody; nextIdx: number } => {
+  const body: BlockBody = { entries: new Map(), errors: [] };
+  let i = startIdx;
+  while (i < lines.length) {
     const raw = lines[i];
-    const trimmed = raw.replace(/\s+#.*$/, "").trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const textMatch = TEXT_RE.exec(trimmed);
-    if (textMatch) {
-      const [, text, posRaw] = textMatch;
-      result.texts.push({ text, ...parseTextPos(posRaw) });
-      continue;
-    }
-
-    const edgeMatch = EDGE_RE.exec(trimmed);
-    if (edgeMatch) {
-      const [, from, op, to, label] = edgeMatch;
-      result.edges.push({
-        from,
-        to,
-        label: label?.trim() || undefined,
-        kind: op === "--" ? "line" : "arrow",
+    const trimmed = stripComment(raw).trim();
+    i++;
+    if (!trimmed) continue;
+    if (trimmed === "}") return { body, nextIdx: i };
+    const m = KV_RE.exec(trimmed);
+    if (!m) {
+      body.errors.push({
+        line: i,
+        raw,
+        message: `Expected "key: value" inside block, got "${trimmed}".`,
       });
       continue;
     }
+    const [, key, rest] = m;
+    const v = parseValue(rest);
+    if (!v) {
+      body.errors.push({
+        line: i,
+        raw,
+        message: `Invalid value for "${key}": ${rest}`,
+      });
+      continue;
+    }
+    body.entries.set(key, v);
+  }
+  body.errors.push({
+    line: startIdx,
+    raw: "",
+    message: `Unterminated block (missing "}").`,
+  });
+  return { body, nextIdx: i };
+};
 
-    const nodeMatch = NODE_RE.exec(trimmed);
-    if (nodeMatch) {
-      const [, id, label, style] = nodeMatch;
-      if (seen.has(id)) {
+const fillNode = (node: ParsedNode, body: BlockBody, result: ParseResult) => {
+  for (const [k, v] of body.entries) {
+    switch (k) {
+      case "label":
+        if (v.kind === "string") node.label = v.value;
+        break;
+      case "shape":
+        if (v.kind === "ident" && VALID_SHAPES.has(v.value as NodeShape)) {
+          node.shape = v.value as NodeShape;
+        }
+        break;
+      case "fill":
+        if (v.kind === "color") node.backgroundColor = v.value;
+        break;
+      case "stroke":
+        if (v.kind === "color") node.strokeColor = v.value;
+        break;
+      case "at":
+        if (v.kind === "numbers" && v.value.length === 2) {
+          node.x = v.value[0];
+          node.y = v.value[1];
+        }
+        break;
+      case "size":
+        if (v.kind === "numbers" && v.value.length === 2) {
+          node.width = v.value[0];
+          node.height = v.value[1];
+        }
+        break;
+    }
+  }
+  for (const e of body.errors) result.errors.push(e);
+};
+
+const fillEdge = (edge: ParsedEdge, body: BlockBody, result: ParseResult) => {
+  const lbl = body.entries.get("label");
+  if (lbl && lbl.kind === "string") edge.label = lbl.value;
+  for (const e of body.errors) result.errors.push(e);
+};
+
+const fillFreeArrow = (
+  kind: EdgeKind,
+  body: BlockBody,
+  result: ParseResult,
+  lineNo: number,
+) => {
+  const from = body.entries.get("from");
+  const to = body.entries.get("to");
+  if (
+    !from || !to ||
+    from.kind !== "numbers" || to.kind !== "numbers" ||
+    from.value.length !== 2 || to.value.length !== 2
+  ) {
+    result.errors.push({
+      line: lineNo,
+      raw: "",
+      message: `${kind} requires "from: x,y" and "to: x,y".`,
+    });
+    return;
+  }
+  const lbl = body.entries.get("label");
+  result.freeArrows.push({
+    kind,
+    fromX: from.value[0],
+    fromY: from.value[1],
+    toX: to.value[0],
+    toY: to.value[1],
+    label: lbl && lbl.kind === "string" ? lbl.value : undefined,
+  });
+  for (const e of body.errors) result.errors.push(e);
+};
+
+const fillText = (body: BlockBody, result: ParseResult, lineNo: number) => {
+  const c = body.entries.get("content");
+  if (!c || c.kind !== "string") {
+    result.errors.push({
+      line: lineNo,
+      raw: "",
+      message: `text requires content: "...".`,
+    });
+    return;
+  }
+  const t: ParsedText = { text: c.value };
+  const at = body.entries.get("at");
+  if (at && at.kind === "numbers" && at.value.length === 2) {
+    t.x = at.value[0];
+    t.y = at.value[1];
+  }
+  const size = body.entries.get("size");
+  if (size && size.kind === "numbers" && size.value.length === 1) {
+    t.fontSize = size.value[0];
+  }
+  result.texts.push(t);
+  for (const e of body.errors) result.errors.push(e);
+};
+
+export const parseDsl = (source: string): ParseResult => {
+  const result: ParseResult = {
+    nodes: [],
+    edges: [],
+    freeArrows: [],
+    texts: [],
+    errors: [],
+  };
+  const rawLines = source.split(/\r?\n/);
+  const seenIds = new Map<string, number>();
+  let i = 0;
+
+  while (i < rawLines.length) {
+    const raw = rawLines[i];
+    const line = stripComment(raw).trim();
+    if (!line) {
+      i++;
+      continue;
+    }
+
+    const nodeM = NODE_HEAD.exec(line);
+    if (nodeM) {
+      const [, id, brace] = nodeM;
+      if (!ID_RE.test(id)) {
+        result.errors.push({ line: i + 1, raw, message: `Invalid id "${id}".` });
+        i++;
+        continue;
+      }
+      if (seenIds.has(id)) {
         result.errors.push({
           line: i + 1,
           raw,
-          message: `Duplicate node id "${id}" (first defined on line ${seen.get(id)}).`,
+          message: `Duplicate node id "${id}" (first on line ${seenIds.get(id)}).`,
+        });
+        i++;
+        continue;
+      }
+      seenIds.set(id, i + 1);
+      const node: ParsedNode = { id, label: id, shape: "rectangle" };
+      i++;
+      if (brace) {
+        const { body, nextIdx } = parseBlock(rawLines, i);
+        fillNode(node, body, result);
+        i = nextIdx;
+      }
+      result.nodes.push(node);
+      continue;
+    }
+
+    const edgeM = EDGE_HEAD.exec(line);
+    if (edgeM) {
+      const [, from, op, to, brace] = edgeM;
+      const edge: ParsedEdge = {
+        from,
+        to,
+        kind: op === "--" ? "line" : "arrow",
+      };
+      i++;
+      if (brace) {
+        const { body, nextIdx } = parseBlock(rawLines, i);
+        fillEdge(edge, body, result);
+        i = nextIdx;
+      }
+      result.edges.push(edge);
+      continue;
+    }
+
+    const simpleM = SIMPLE_HEAD.exec(line);
+    if (simpleM) {
+      const [, kw, brace] = simpleM;
+      i++;
+      const lineNo = i;
+      if (!brace) {
+        result.errors.push({
+          line: lineNo,
+          raw,
+          message: `"${kw}" requires a { ... } block.`,
         });
         continue;
       }
-      seen.set(id, i + 1);
-      result.nodes.push({ id, label: label.trim(), ...parseStyle(style) });
+      const { body, nextIdx } = parseBlock(rawLines, i);
+      i = nextIdx;
+      if (kw === "arrow") fillFreeArrow("arrow", body, result, lineNo);
+      else if (kw === "line") fillFreeArrow("line", body, result, lineNo);
+      else fillText(body, result, lineNo);
       continue;
     }
 
     result.errors.push({
       line: i + 1,
       raw,
-      message: `Cannot parse line. Expected node, edge or "text".`,
+      message: `Cannot parse line. Expected node, edge, arrow, line or text.`,
     });
+    i++;
   }
 
-  // Auto-create implicit nodes referenced only by edges.
+  // Auto-create implicit nodes for edges that reference undeclared ids.
   const ids = new Set(result.nodes.map((n) => n.id));
   for (const e of result.edges) {
     for (const id of [e.from, e.to]) {

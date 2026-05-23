@@ -12,18 +12,11 @@ const round = (n: number) => Math.round(n);
 const isTransparent = (c: string | undefined) =>
   !c || c === "transparent" || c === "#00000000";
 
-/**
- * Build a stable, parser-friendly identifier for an element.
- * Returns the element's own id if it's already a clean identifier,
- * otherwise a generated `n<index>` fallback. The mapping is stable
- * within a single serialize() call.
- */
 const buildIdMap = (
   els: readonly ExcalidrawElement[],
 ): Map<string, string> => {
   const map = new Map<string, string>();
   const used = new Set<string>();
-  // first pass: keep clean ids
   for (const e of els) {
     if (e.isDeleted) continue;
     if (!SHAPE_TYPES.has(e.type)) continue;
@@ -32,7 +25,6 @@ const buildIdMap = (
       used.add(e.id);
     }
   }
-  // second pass: synthesize for the rest
   let counter = 1;
   for (const e of els) {
     if (e.isDeleted) continue;
@@ -56,39 +48,87 @@ const labelFor = (
   return t && !t.isDeleted ? t.text : "";
 };
 
-const styleTokens = (
+const escapeString = (s: string) =>
+  s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n");
+
+const indent = (s: string) => s.split("\n").map((l) => "  " + l).join("\n");
+
+const serializeNode = (
   el: ExcalidrawElement,
-): string[] => {
-  const tokens: string[] = [];
-  tokens.push(el.type);
-  if (!isTransparent(el.backgroundColor)) tokens.push(el.backgroundColor);
-  // Only emit strokeColor if it differs from the default we use when building.
-  if (el.strokeColor && el.strokeColor !== "#1e1e1e") {
-    if (isTransparent(el.backgroundColor)) {
-      // ensure we still have a bg slot so parser puts color in stroke slot
-      tokens.push("transparent");
-    }
-    tokens.push(el.strokeColor);
+  id: string,
+  label: string,
+): string => {
+  const lines: string[] = [];
+  if (label && label !== id) lines.push(`label:  "${escapeString(label)}"`);
+  if (el.type !== "rectangle") lines.push(`shape:  ${el.type}`);
+  if (!isTransparent(el.backgroundColor)) {
+    lines.push(`fill:   ${el.backgroundColor}`);
   }
-  const pos = `@${round(el.x)},${round(el.y)},${round(el.width)},${round(el.height)}`;
-  tokens.push(pos);
-  return tokens;
+  if (el.strokeColor && el.strokeColor !== "#1e1e1e") {
+    lines.push(`stroke: ${el.strokeColor}`);
+  }
+  lines.push(`at:     ${round(el.x)}, ${round(el.y)}`);
+  lines.push(`size:   ${round(el.width)}, ${round(el.height)}`);
+  return `node ${id} {\n${indent(lines.join("\n"))}\n}`;
 };
 
-const escapeLabelInBrackets = (s: string) =>
-  s.replace(/\]/g, "\\]").replace(/\r?\n/g, " ");
+const serializeEdge = (
+  from: string,
+  to: string,
+  op: "->" | "--",
+  label: string,
+): string => {
+  if (!label) return `edge ${from} ${op} ${to}`;
+  return `edge ${from} ${op} ${to} {\n  label: "${escapeString(label)}"\n}`;
+};
 
-const escapeEdgeLabel = (s: string) => s.replace(/\r?\n/g, " ");
+const linearEndpoints = (l: ExcalidrawLinearElement) => {
+  const pts = l.points;
+  if (!pts || pts.length < 2) return null;
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  return {
+    fromX: l.x + first[0],
+    fromY: l.y + first[1],
+    toX: l.x + last[0],
+    toY: l.y + last[1],
+  };
+};
+
+const serializeFreeLinear = (
+  kind: "arrow" | "line",
+  e: ExcalidrawLinearElement,
+  label: string,
+): string => {
+  const pts = linearEndpoints(e);
+  if (!pts) return "";
+  const lines = [
+    `from:  ${round(pts.fromX)}, ${round(pts.fromY)}`,
+    `to:    ${round(pts.toX)}, ${round(pts.toY)}`,
+  ];
+  if (label && kind === "arrow") {
+    lines.push(`label: "${escapeString(label)}"`);
+  }
+  return `${kind} {\n${indent(lines.join("\n"))}\n}`;
+};
+
+const serializeText = (t: ExcalidrawTextElement): string => {
+  const lines = [
+    `content: "${escapeString(t.text)}"`,
+    `at:      ${round(t.x)}, ${round(t.y)}`,
+  ];
+  if (t.fontSize && t.fontSize !== 20) {
+    lines.push(`size:    ${round(t.fontSize)}`);
+  }
+  return `text {\n${indent(lines.join("\n"))}\n}`;
+};
 
 /**
  * Serialize an Excalidraw scene back into CodeDraw DSL.
  *
- * Only handles types CodeDraw understands: rectangle/ellipse/diamond,
- * arrow/line and standalone text. Unknown element types (image, freedraw,
- * etc.) are silently skipped.
- *
- * Positions and sizes are always emitted so the round-trip is stable —
- * the parser will see explicit @x,y,w,h and skip auto-layout.
+ * Round-trip-safe for nodes (rectangle/ellipse/diamond), arrows and lines
+ * (whether bound to nodes or free-floating), and standalone text.
+ * Unsupported element types are skipped.
  */
 export const serializeScene = (
   elements: readonly ExcalidrawElement[],
@@ -97,40 +137,45 @@ export const serializeScene = (
   const byId = new Map(live.map((e) => [e.id, e]));
   const idMap = buildIdMap(elements);
 
-  const nodeLines: string[] = [];
+  const nodeBlocks: string[] = [];
   for (const e of live) {
     if (!SHAPE_TYPES.has(e.type)) continue;
     const id = idMap.get(e.id);
     if (!id) continue;
-    const label = labelFor(e, byId) || id;
-    const tokens = styleTokens(e);
-    nodeLines.push(`${id} [${escapeLabelInBrackets(label)}] (${tokens.join(", ")})`);
+    nodeBlocks.push(serializeNode(e, id, labelFor(e, byId)));
   }
 
-  const edgeLines: string[] = [];
+  const edgeBlocks: string[] = [];
+  const freeBlocks: string[] = [];
   for (const e of live) {
     if (e.type !== "arrow" && e.type !== "line") continue;
     const linear = e as ExcalidrawLinearElement;
     const fromId = linear.startBinding?.elementId;
     const toId = linear.endBinding?.elementId;
-    if (!fromId || !toId) continue;
-    const from = idMap.get(fromId);
-    const to = idMap.get(toId);
-    if (!from || !to) continue;
-    const op = e.type === "arrow" ? "->" : "--";
     const label = labelFor(e, byId);
-    edgeLines.push(`${from} ${op} ${to}${label ? ` : ${escapeEdgeLabel(label)}` : ""}`);
+    if (
+      fromId && toId &&
+      idMap.has(fromId) && idMap.has(toId)
+    ) {
+      const from = idMap.get(fromId)!;
+      const to = idMap.get(toId)!;
+      edgeBlocks.push(serializeEdge(from, to, e.type === "arrow" ? "->" : "--", label));
+    } else {
+      const block = serializeFreeLinear(e.type, linear, label);
+      if (block) freeBlocks.push(block);
+    }
   }
 
-  const textLines: string[] = [];
+  const textBlocks: string[] = [];
   for (const e of live) {
     if (e.type !== "text") continue;
     const t = e as ExcalidrawTextElement;
-    if (t.containerId) continue; // bound label, already emitted as node label
-    const escaped = t.text.replace(/"/g, '\\"').replace(/\r?\n/g, " ");
-    textLines.push(`"${escaped}" (@${round(t.x)},${round(t.y)})`);
+    if (t.containerId) continue; // already serialized as a node label
+    textBlocks.push(serializeText(t));
   }
 
-  const sections = [nodeLines, edgeLines, textLines].filter((s) => s.length);
-  return sections.map((s) => s.join("\n")).join("\n\n");
+  const sections = [nodeBlocks, edgeBlocks, freeBlocks, textBlocks].filter(
+    (s) => s.length,
+  );
+  return sections.map((s) => s.join("\n\n")).join("\n\n");
 };

@@ -13,29 +13,60 @@
 
 ## The DSL
 
+Block-structured. Each top-level statement starts with a keyword
+(`node`, `edge`, `arrow`, `line`, `text`) and has an optional `{ ... }`
+block of `key: value` attributes.
+
 ```text
-# Comments start with '#'.
-# Nodes:  id [label]                 -> rectangle, neutral colors
-#         id [label] (shape)         -> shape ∈ rectangle | ellipse | diamond
-#         id [label] (shape, #bg)
-#         id [label] (shape, #bg, #stroke)
-# Edges:  id1 -> id2                 -> arrow
-#         id1 -> id2 : label         -> labelled arrow
-#         id1 -- id2 : label         -> plain line (no arrowhead)
-# Text:   "free text in quotes"
+# Comments start with '#' (line or trailing).
+#
+# node <id> { label, shape, fill, stroke, at, size }
+# edge <id> -> <id> { label }       arrow, bound to nodes
+# edge <id> -- <id> { label }       line,  bound to nodes
+# arrow { from: x,y  to: x,y  label }   free arrow
+# line  { from: x,y  to: x,y }          free line
+# text  { content: "...", at, size }    free text
+#
+# Shapes: rectangle (default) | ellipse | diamond
+# The { ... } block is optional when no attributes are needed.
 
-start [Start]       (ellipse, #b2f2bb)
-check [Valid?]      (diamond, #fff3bf)
-ok    [Process]     (rectangle, #a5d8ff)
-err   [Show error]  (rectangle, #ffc9c9)
-done  [End]         (ellipse, #b2f2bb)
+node start {
+  label: "Start"
+  shape: ellipse
+  fill:  #b2f2bb
+}
 
-start -> check
-check -> ok  : yes
-check -> err : no
-ok    -> done
-err   -> check : retry
+node check {
+  label: "Valid?"
+  shape: diamond
+  fill:  #fff3bf
+}
+
+node work  { label: "Process"   fill: #a5d8ff }
+node error { label: "Show error" fill: #ffc9c9 }
+node done  { label: "End" shape: ellipse fill: #b2f2bb }
+
+edge start -> check
+edge check -> work  { label: "yes" }
+edge check -> error { label: "no" }
+edge work  -> done
+edge error -> start { label: "retry" }
+
+text { content: "code in, diagram out" }
 ```
+
+Attributes accepted in blocks:
+
+| Statement | Keys |
+| --------- | ---- |
+| `node`    | `label: "..."`, `shape: rectangle\|ellipse\|diamond`, `fill: #hex`, `stroke: #hex`, `at: x, y`, `size: w, h` |
+| `edge`    | `label: "..."` |
+| `arrow`   | `from: x, y`, `to: x, y`, `label: "..."` |
+| `line`    | `from: x, y`, `to: x, y` |
+| `text`    | `content: "..."`, `at: x, y`, `size: fontSize` |
+
+Canvas edits (move, restyle, add free arrows, etc.) are serialised back
+into this same DSL in real time — round-trip is stable.
 
 ## Development
 

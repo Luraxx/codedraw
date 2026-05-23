@@ -1,24 +1,57 @@
 export const DEFAULT_CODE = `# CodeDraw DSL — type code on the left, see the diagram on the right.
-# Edits on the canvas are synced back into the code automatically.
+# Canvas edits sync back into the code automatically.
 #
-# Nodes:  id [label] (shape, #bgColor, #strokeColor)
-# Edges:  id1 -> id2 : optional label
-# Line:   id1 -- id2 : without arrowhead
-# Text:   "free text in quotes"
+# Statements:
+#   node <id> { label, shape, fill, stroke, at, size }
+#   edge <id> -> <id> { label }       arrow bound to nodes
+#   edge <id> -- <id> { label }       line bound to nodes
+#   arrow { from: x,y  to: x,y  label }   free arrow
+#   line  { from: x,y  to: x,y }          free line
+#   text  { content: "...", at, size }    free text
+#
+# Shapes: rectangle (default), ellipse, diamond
+# The { ... } block is optional when no attributes are needed.
 
-start [Start]          (ellipse, #b2f2bb)
-input [Read input]     (rectangle)
-check [Valid?]         (diamond, #fff3bf)
-work  [Process]        (rectangle, #a5d8ff)
-error [Show error]     (rectangle, #ffc9c9)
-done  [End]            (ellipse, #b2f2bb)
+node start {
+  label: "Start"
+  shape: ellipse
+  fill:  #b2f2bb
+}
 
-start -> input
-input -> check
-check -> work  : yes
-check -> error : no
-work  -> done
-error -> input : retry
+node input {
+  label: "Read input"
+}
 
-"CodeDraw — code in, diagram out"
+node check {
+  label: "Valid?"
+  shape: diamond
+  fill:  #fff3bf
+}
+
+node work {
+  label: "Process"
+  fill:  #a5d8ff
+}
+
+node error {
+  label: "Show error"
+  fill:  #ffc9c9
+}
+
+node done {
+  label: "End"
+  shape: ellipse
+  fill:  #b2f2bb
+}
+
+edge start -> input
+edge input -> check
+edge check -> work  { label: "yes" }
+edge check -> error { label: "no" }
+edge work  -> done
+edge error -> input { label: "retry" }
+
+text {
+  content: "CodeDraw — code in, diagram out"
+}
 `;

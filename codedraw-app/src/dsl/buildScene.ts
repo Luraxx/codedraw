@@ -2,19 +2,17 @@ import dagre from "dagre";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import type { ExcalidrawElement } from "@excalidraw/element/types";
 
-import type { ParseResult, ParsedNode } from "./parser";
+import type { ParseResult } from "./parser";
 
 const DEFAULT_W = 180;
 const DEFAULT_H = 80;
-const TEXT_W = 240;
-const TEXT_H = 24;
 
 /**
- * Build deterministic ExcalidrawElement[] from a parsed DSL.
+ * Build ExcalidrawElement[] from a parsed DSL.
  *
- * If at least one node lacks an explicit position, the WHOLE graph is laid out
- * via dagre (top-down). Otherwise positions from the DSL are used verbatim,
- * so canvas edits round-trip cleanly through the serializer.
+ * Layout strategy:
+ * - If every node has explicit `at:` coordinates, no auto-layout runs.
+ * - Otherwise dagre is used for all nodes; explicit positions still win.
  */
 export const buildScene = (
   parsed: ParseResult,
@@ -23,14 +21,26 @@ export const buildScene = (
     (n) => n.x === undefined || n.y === undefined,
   );
 
-  const positions = new Map<string, { x: number; y: number; w: number; h: number }>();
+  const positions = new Map<
+    string,
+    { x: number; y: number; w: number; h: number }
+  >();
 
   if (needsAutoLayout && parsed.nodes.length > 0) {
     const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 80, marginx: 40, marginy: 40 });
+    g.setGraph({
+      rankdir: "TB",
+      nodesep: 60,
+      ranksep: 80,
+      marginx: 40,
+      marginy: 40,
+    });
     g.setDefaultEdgeLabel(() => ({}));
     for (const n of parsed.nodes) {
-      g.setNode(n.id, { width: n.width ?? DEFAULT_W, height: n.height ?? DEFAULT_H });
+      g.setNode(n.id, {
+        width: n.width ?? DEFAULT_W,
+        height: n.height ?? DEFAULT_H,
+      });
     }
     for (const e of parsed.edges) {
       if (g.hasNode(e.from) && g.hasNode(e.to)) g.setEdge(e.from, e.to);
@@ -88,27 +98,37 @@ export const buildScene = (
     } as Skel);
   }
 
-  if (parsed.texts.length > 0) {
-    // place any text without explicit position below the bounding box
-    const allXs = [...positions.values()].map((p) => p.x);
-    const allYs = [...positions.values()].map((p) => p.y + p.h);
-    const baseX = allXs.length ? Math.min(...allXs) : 0;
-    const baseY = allYs.length ? Math.max(...allYs) + 40 : 0;
-    let cursor = 0;
-    parsed.texts.forEach((t) => {
-      const x = t.x ?? baseX;
-      const y = t.y ?? baseY + cursor * (TEXT_H + 8);
-      if (t.y === undefined) cursor++;
-      skeleton.push({
-        type: "text",
-        x,
-        y,
-        width: TEXT_W,
-        height: TEXT_H,
-        text: t.text,
-        fontSize: 20,
-      } as Skel);
-    });
+  for (const a of parsed.freeArrows) {
+    skeleton.push({
+      type: a.kind,
+      x: a.fromX,
+      y: a.fromY,
+      points: [
+        [0, 0],
+        [a.toX - a.fromX, a.toY - a.fromY],
+      ],
+      strokeColor: "#1e1e1e",
+      ...(a.label ? { label: { text: a.label } } : {}),
+    } as Skel);
+  }
+
+  // Text without explicit position: stack below the node bounding box.
+  const allXs = [...positions.values()].map((p) => p.x);
+  const allYs = [...positions.values()].map((p) => p.y + p.h);
+  const baseX = allXs.length ? Math.min(...allXs) : 0;
+  const baseY = allYs.length ? Math.max(...allYs) + 40 : 0;
+  let cursor = 0;
+  for (const t of parsed.texts) {
+    const x = t.x ?? baseX;
+    const y = t.y ?? baseY + cursor * 32;
+    if (t.y === undefined) cursor++;
+    skeleton.push({
+      type: "text",
+      x,
+      y,
+      text: t.text,
+      fontSize: t.fontSize ?? 20,
+    } as Skel);
   }
 
   return convertToExcalidrawElements(skeleton, { regenerateIds: false });
