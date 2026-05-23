@@ -97,13 +97,6 @@ const App = () => {
         <h1>CodeDraw</h1>
         <span style={{ opacity: 0.6 }}>code → diagram</span>
         <span className="cd-spacer" />
-        <a
-          href="https://github.com/luisdehlwes/codedraw"
-          target="_blank"
-          rel="noreferrer"
-        >
-          GitHub
-        </a>
       </header>
       <div className="cd-split" style={{ ["--editor-width" as any]: width }}>
         <div className="cd-editor">

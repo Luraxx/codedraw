@@ -1,6 +1,9 @@
+# Replace OWNER with your GitHub user/org (or your private registry path)
+# before pulling on a server. The CI workflow auto-publishes images to
+# ghcr.io/<repo-owner>/codedraw-{web,api}.
 services:
   web:
-    image: ghcr.io/luisdehlwes/codedraw-web:latest
+    image: ghcr.io/OWNER/codedraw-web:latest
     container_name: codedraw-web
     restart: unless-stopped
     expose:
@@ -14,7 +17,7 @@ services:
       retries: 3
 
   api:
-    image: ghcr.io/luisdehlwes/codedraw-api:latest
+    image: ghcr.io/OWNER/codedraw-api:latest
     container_name: codedraw-api
     restart: unless-stopped
     depends_on:

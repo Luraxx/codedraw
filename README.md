@@ -1,53 +1,63 @@
 # CodeDraw
 
-> Code rein — Diagramm raus. Ein schlanker Fork von [Excalidraw](https://github.com/excalidraw/excalidraw), entkoppelt von Collab / Firebase / Marketing, mit Live-Code-zu-Diagramm Editor.
+> Code in — diagram out. A slim fork of [Excalidraw](https://github.com/excalidraw/excalidraw) with collaboration, Firebase, marketing and library-browser stripped out, plus a live code-to-diagram editor and a headless HTTP render API.
 
-## Was es kann
+## What it does
 
-- **Split-View**: links Monaco Code-Editor, rechts Excalidraw-Canvas
-- **Live-Update**: jede Änderung im Code wird sofort gerendert (Debounce 150 ms)
-- **Auto-Layout** via [dagre](https://github.com/dagrejs/dagre) (hierarchisch, top-down)
-- Volles Excalidraw-Editing am Canvas (Formen verschieben, einfärben, mehr Elemente hinzufügen, Export PNG/SVG)
-- Persistenz in `localStorage`
+- **Split view**: Monaco code editor on the left, Excalidraw canvas on the right.
+- **Live update**: every change in the editor is re-rendered (150 ms debounce).
+- **Auto layout** via [dagre](https://github.com/dagrejs/dagre) (hierarchical, top-down).
+- Full Excalidraw editing on the canvas: move/restyle shapes, add elements, export PNG/SVG.
+- Persistence in `localStorage`.
+- **HTTP API** that accepts DSL code and returns a PNG, SVG or `.excalidraw` JSON.
 
-## Die DSL
+## The DSL
 
 ```text
-# Kommentar
-# Knoten:  id [label]                        -> rectangle, neutral
-#          id [label] (shape)                -> shape ∈ rectangle|ellipse|diamond
-#          id [label] (shape, #bg)
-#          id [label] (shape, #bg, #stroke)
-# Kante:   id1 -> id2                         -> Pfeil
-#          id1 -> id2 : Label                 -> Pfeil mit Label
-#          id1 -- id2 : Label                 -> Linie ohne Pfeilspitze
-# Text:    "freier Text"
+# Comments start with '#'.
+# Nodes:  id [label]                 -> rectangle, neutral colors
+#         id [label] (shape)         -> shape ∈ rectangle | ellipse | diamond
+#         id [label] (shape, #bg)
+#         id [label] (shape, #bg, #stroke)
+# Edges:  id1 -> id2                 -> arrow
+#         id1 -> id2 : label         -> labelled arrow
+#         id1 -- id2 : label         -> plain line (no arrowhead)
+# Text:   "free text in quotes"
 
-start [Start]            (ellipse, #b2f2bb)
-check [Gültig?]          (diamond, #fff3bf)
-ok    [Verarbeiten]      (rectangle, #a5d8ff)
-err   [Fehler]           (rectangle, #ffc9c9)
-done  [Ende]             (ellipse, #b2f2bb)
+start [Start]       (ellipse, #b2f2bb)
+check [Valid?]      (diamond, #fff3bf)
+ok    [Process]     (rectangle, #a5d8ff)
+err   [Show error]  (rectangle, #ffc9c9)
+done  [End]         (ellipse, #b2f2bb)
 
 start -> check
-check -> ok  : ja
-check -> err : nein
+check -> ok  : yes
+check -> err : no
 ok    -> done
 err   -> check : retry
 ```
 
-## Entwicklung
+## Development
 
-Voraussetzungen: Node ≥ 18, yarn 1.x.
+Requirements: Node ≥ 18, yarn 1.x.
 
 ```bash
 yarn install
-yarn start            # http://localhost:3001
+yarn start            # web UI at http://localhost:3001
 yarn build            # → codedraw-app/dist
 yarn preview          # → http://localhost:4173
 ```
 
-## Docker
+Run the API in dev mode (requires the web app to be running, since the API
+loads it headlessly):
+
+```bash
+# in another shell, after `yarn start` is up
+CODEDRAW_WEB_URL=http://localhost:3001 yarn --cwd codedraw-api dev
+# API listens on http://localhost:3000
+```
+
+## Docker (web only)
 
 ```bash
 docker build -t codedraw-web .
@@ -55,84 +65,104 @@ docker run --rm -p 8080:80 codedraw-web
 # → http://localhost:8080
 ```
 
-## HTTP-API (`codedraw-api`)
+## HTTP API (`codedraw-api`)
 
-Zusätzlich zum Web-UI gibt es einen kleinen Service, der per HTTP DSL-Code
-entgegennimmt und ein **PNG / SVG / JSON** zurückgibt. Intern öffnet er die
-Web-App headless in Chromium und benutzt die Excalidraw-Export-Pipeline —
-das Ergebnis ist also pixel-identisch zum Browser-Export.
+A small Fastify service that accepts DSL code over HTTP and returns
+**PNG / SVG / JSON**. Internally it opens the web app headlessly in
+Chromium (via Playwright) and reuses Excalidraw's own export pipeline, so
+the output is pixel-identical to a browser export.
 
 ### Endpoints
 
-| Method | Path       | Beschreibung                              |
-|--------|------------|-------------------------------------------|
-| `GET`  | `/health`  | Status (browser/page bereit)              |
-| `POST` | `/render`  | DSL-Code → PNG/SVG/JSON                   |
+| Method | Path       | Description                              |
+|--------|------------|------------------------------------------|
+| `GET`  | `/health`  | Liveness; reports browser/page state.    |
+| `POST` | `/render`  | DSL code → image.                        |
 
-`POST /render` Body (JSON):
+`POST /render` body (JSON):
 
 ```jsonc
 {
-  "code": "a [Start] (ellipse)\nb [Ende]\na -> b : go",
+  "code": "a [Start] (ellipse)\nb [End]\na -> b : go",
   "format": "png",          // "png" | "svg" | "json"  (default: "png")
-  "scale": 2,                // PNG only, 0.25 – 5  (default 1)
-  "padding": 20,             // export padding in px (default 20)
-  "background": "#ffffff",   // oder "transparent"
+  "scale": 2,                // PNG only, 0.25 – 5  (default: 1)
+  "padding": 20,             // export padding in px (default: 20)
+  "background": "#ffffff",   // CSS color, or "transparent"
   "theme": "light"           // "light" | "dark"
 }
 ```
 
-Antwort:
-- `format=png` → `image/png` Binary
-- `format=svg` → `image/svg+xml` Text
-- `format=json` → `.excalidraw`-Scene als JSON
-- Parser-Warnings landen im Header `x-codedraw-errors` (JSON-Array).
+Response:
+
+- `format=png`  → `image/png` binary
+- `format=svg`  → `image/svg+xml` text
+- `format=json` → `.excalidraw` scene as JSON
+- Parser warnings (unparsable lines, etc.) are returned in the
+  `x-codedraw-errors` header as a JSON array.
 
 ### Auth
 
-Setze `CODEDRAW_API_KEY` env-var auf den API-Container. Clients senden dann
-`Authorization: Bearer <key>`. Ohne gesetzten Key ist der Endpoint offen.
+Set `CODEDRAW_API_KEY` on the API container to enable bearer auth. Clients
+must then send `Authorization: Bearer <key>`. If the env var is unset, the
+endpoint is open.
 
-### Beispiele
+### Examples
 
 ```bash
-# PNG nach datei
+# PNG to file
 curl -X POST http://server:8081/render \
   -H "content-type: application/json" \
-  -d '{"code":"a [Start] (ellipse)\nb [Ende]\na -> b","format":"png","scale":2}' \
+  -d '{"code":"a [Start] (ellipse)\nb [End]\na -> b","format":"png","scale":2}' \
   --output diagram.png
 
-# SVG nach stdout
+# SVG to stdout
 curl -X POST http://server:8081/render \
   -H "content-type: application/json" \
   -d '{"code":"a -> b -> c","format":"svg"}' > diagram.svg
 
-# mit auth
+# with auth
 curl -X POST http://server:8081/render \
-  -H "authorization: Bearer geheim" \
+  -H "authorization: Bearer secret" \
   -H "content-type: application/json" \
   -d '{"code":"a -> b","format":"png"}' --output d.png
 ```
 
-## Deployment (Hetzner via GHCR)
+### Configuration (API)
 
-CI baut zwei Images: `ghcr.io/luisdehlwes/codedraw-web` (nginx-SPA) und
-`ghcr.io/luisdehlwes/codedraw-api` (Fastify + Chromium).
+| Env var                       | Default          | Meaning                                   |
+|-------------------------------|------------------|-------------------------------------------|
+| `CODEDRAW_WEB_URL`            | `http://web`     | Where the web app is reachable from the API container. |
+| `PORT`                        | `3000`           | API listen port.                          |
+| `CODEDRAW_API_KEY`            | *(unset)*        | If set, requires `Authorization: Bearer`. |
+| `CODEDRAW_MAX_CODE_BYTES`     | `65536`          | Reject larger payloads.                   |
+| `CODEDRAW_RENDER_TIMEOUT_MS`  | `15000`          | Per-render Playwright timeout.            |
+
+## Deployment
+
+CI builds two images and pushes them to GHCR:
+
+- `ghcr.io/<owner>/codedraw-web` — nginx serving the SPA
+- `ghcr.io/<owner>/codedraw-api` — Fastify + headless Chromium
+
+On any Docker host:
 
 ```bash
 mkdir -p /opt/codedraw && cd /opt/codedraw
-curl -O https://raw.githubusercontent.com/luisdehlwes/codedraw/main/docker-compose.yml
-docker login ghcr.io          # nur falls Images privat
+curl -O https://raw.githubusercontent.com/<owner>/codedraw/main/docker-compose.yml
+# edit docker-compose.yml and replace "OWNER" with your GitHub user/org
+docker login ghcr.io          # only if the images are private
 docker compose pull
 docker compose up -d
 ```
 
-Ports nach außen: `8080` = Web-UI, `8081` = API. Davor ein
-Reverse-Proxy mit TLS (Caddy / nginx / Traefik), z.B.:
+Exposed ports: `8080` = web UI, `8081` = API. Put a reverse proxy with TLS
+(Caddy / nginx / Traefik) in front of them, e.g.:
 
-- `codedraw.example.com` → `http://localhost:8080`
-- `codedraw-api.example.com` → `http://localhost:8081`
+- `codedraw.example.com`      → `http://localhost:8080`
+- `codedraw-api.example.com`  → `http://localhost:8081`
 
-## Lizenz / Credits
+## License & credits
 
-CodeDraw ist ein Fork von [Excalidraw](https://github.com/excalidraw/excalidraw) und steht unter der **MIT-Lizenz** — siehe `LICENSE` und `NOTICE.md`.
+CodeDraw is a fork of [Excalidraw](https://github.com/excalidraw/excalidraw)
+and is distributed under the **MIT license** — see [`LICENSE`](LICENSE) and
+[`NOTICE.md`](NOTICE.md).

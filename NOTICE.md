@@ -19,7 +19,8 @@ released under the MIT License.
   `<Excalidraw />` and renders a simple DSL into Excalidraw elements via
   `convertToExcalidrawElements` + dagre auto-layout.
 - Added Dockerfile (multi-stage, nginx) and a GitHub Actions workflow that
-  publishes the production image to `ghcr.io/luisdehlwes/codedraw`.
+  publishes the production images to `ghcr.io/<owner>/codedraw-web` and
+  `ghcr.io/<owner>/codedraw-api`.
 
 All credit for the underlying drawing engine, rendering, font handling and
 React component design goes to the Excalidraw team and contributors.
