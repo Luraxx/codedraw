@@ -69,8 +69,7 @@ the reverse proxy on 443 instead.
 Point DNS at the server:
 
 ```
-codedraw.dehlwes.net.      A    <server-ip>
-codedraw-api.dehlwes.net.  A    <server-ip>
+codedraw.dehlwes.net.  A  <server-ip>
 ```
 
 Install Caddy and write `/etc/caddy/Caddyfile`:
@@ -80,15 +79,6 @@ codedraw.dehlwes.net {
   encode zstd gzip
   reverse_proxy 127.0.0.1:8080
 }
-
-codedraw-api.dehlwes.net {
-  encode zstd gzip
-  # API payloads are JSON, responses can be PNG up to ~5 MB.
-  request_body {
-    max_size 1MB
-  }
-  reverse_proxy 127.0.0.1:8081
-}
 ```
 
 ```bash
@@ -97,13 +87,16 @@ sudo systemctl reload caddy
 
 Caddy automatically obtains and renews Let's Encrypt certificates.
 
+The API is proxied internally: `https://codedraw.dehlwes.net/api/*` → nginx → `codedraw-api:3000`.
+No separate subdomain or port exposure is needed.
+
 ## 5. Smoke test
 
 ```bash
-curl https://codedraw-api.dehlwes.net/health
-curl https://codedraw-api.dehlwes.net/example | \
+curl https://codedraw.dehlwes.net/api/health
+curl https://codedraw.dehlwes.net/api/example | \
   jq -Rs '{code:., format:"png", scale:2}' | \
-  curl -X POST https://codedraw-api.dehlwes.net/render \
+  curl -X POST https://codedraw.dehlwes.net/api/render \
        -H 'content-type: application/json' \
        --data-binary @- --output /tmp/d.png
 file /tmp/d.png   # PNG image data, …
