@@ -314,7 +314,21 @@ export const buildScene = (
         skel.elbowed = true;
         skel.roundness = null;
       }
-      if (e.label) skel.label = { text: e.label };
+      // Excalidraw drops `boundElements` labels on `line` type; emit a
+      // free text element at the midpoint instead so the label still shows.
+      if (e.label) {
+        if (isLine) {
+          skeleton.push({
+            type: "text",
+            x: (sx + ex) / 2,
+            y: (sy + ey) / 2 - 12,
+            text: e.label,
+            fontSize: 16,
+          } as Skel);
+        } else {
+          skel.label = { text: e.label };
+        }
+      }
       applyLinearStyleToSkel(skel, e, {
         endArrowhead: isLine ? "none" : "default",
       });
@@ -332,7 +346,7 @@ export const buildScene = (
         skel.elbowed = true;
         skel.roundness = null;
       }
-      if (e.label) skel.label = { text: e.label };
+      if (e.label && !isLine) skel.label = { text: e.label };
       applyLinearStyleToSkel(skel, e, {
         endArrowhead: isLine ? "none" : "default",
       });
@@ -358,7 +372,19 @@ export const buildScene = (
       skel.elbowed = true;
       skel.roundness = null;
     }
-    if (a.label) skel.label = { text: a.label };
+    if (a.label) {
+      if (isLine) {
+        skeleton.push({
+          type: "text",
+          x: (a.fromX + a.toX) / 2,
+          y: (a.fromY + a.toY) / 2 - 12,
+          text: a.label,
+          fontSize: 16,
+        } as Skel);
+      } else {
+        skel.label = { text: a.label };
+      }
+    }
     applyLinearStyleToSkel(skel, a, {
       endArrowhead: isLine ? "none" : "default",
     });
