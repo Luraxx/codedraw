@@ -122,6 +122,158 @@ const sceneSignature = (els: readonly ExcalidrawElement[]): string => {
   return s;
 };
 
+// Logical "page" used by the minimap and the out-of-bounds validation.
+// Elements outside this rectangle (or larger/smaller than the size bounds
+// below) trigger a validation error in the code panel so authors notice
+// before the diagram drifts off-screen.
+const CANVAS_BOUNDS = { x: 0, y: 0, w: 4000, h: 3000 } as const;
+const MIN_ELEMENT_SIZE = 5;
+const MAX_ELEMENT_SIZE = 2500;
+
+type ViewportInfo = {
+  scrollX: number;
+  scrollY: number;
+  zoom: number;
+  width: number;
+  height: number;
+};
+
+type ValidationError = { line: number; message: string; raw?: string };
+
+const validateElements = (
+  els: readonly ExcalidrawElement[],
+): ValidationError[] => {
+  const errs: ValidationError[] = [];
+  for (const e of els) {
+    if (e.isDeleted) continue;
+    if (e.type === "text") continue; // texts have dynamic size; skip
+    const w = e.width ?? 0;
+    const h = e.height ?? 0;
+    const minSide = Math.min(Math.abs(w), Math.abs(h));
+    const maxSide = Math.max(Math.abs(w), Math.abs(h));
+    if (minSide > 0 && minSide < MIN_ELEMENT_SIZE) {
+      errs.push({
+        line: 0,
+        message: `Element "${e.id}" is too small (${Math.round(w)}×${Math.round(h)})`,
+      });
+    }
+    if (maxSide > MAX_ELEMENT_SIZE) {
+      errs.push({
+        line: 0,
+        message: `Element "${e.id}" is too large (${Math.round(w)}×${Math.round(h)}); max ${MAX_ELEMENT_SIZE}`,
+      });
+    }
+    const x1 = e.x;
+    const y1 = e.y;
+    const x2 = e.x + w;
+    const y2 = e.y + h;
+    if (
+      x1 < CANVAS_BOUNDS.x ||
+      y1 < CANVAS_BOUNDS.y ||
+      x2 > CANVAS_BOUNDS.x + CANVAS_BOUNDS.w ||
+      y2 > CANVAS_BOUNDS.y + CANVAS_BOUNDS.h
+    ) {
+      errs.push({
+        line: 0,
+        message: `Element "${e.id}" is outside the canvas (${Math.round(x1)},${Math.round(y1)})`,
+      });
+    }
+  }
+  return errs;
+};
+
+const Minimap = ({
+  elements,
+  viewport,
+}: {
+  elements: readonly ExcalidrawElement[];
+  viewport: ViewportInfo | null;
+}) => {
+  const W = 200;
+  const H = 150;
+  const PAD = 6;
+  const scale = Math.min(
+    (W - PAD * 2) / CANVAS_BOUNDS.w,
+    (H - PAD * 2) / CANVAS_BOUNDS.h,
+  );
+  const sx = (x: number) => PAD + (x - CANVAS_BOUNDS.x) * scale;
+  const sy = (y: number) => PAD + (y - CANVAS_BOUNDS.y) * scale;
+
+  const viewRect = viewport
+    ? {
+        x: sx(-viewport.scrollX),
+        y: sy(-viewport.scrollY),
+        w: (viewport.width / viewport.zoom) * scale,
+        h: (viewport.height / viewport.zoom) * scale,
+      }
+    : null;
+
+  return (
+    <div className="cd-minimap" aria-hidden="true">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+        <rect
+          x={PAD}
+          y={PAD}
+          width={CANVAS_BOUNDS.w * scale}
+          height={CANVAS_BOUNDS.h * scale}
+          fill="#0e1116"
+          stroke="#3a4150"
+          strokeWidth={1}
+        />
+        {elements.map((e) => {
+          if (e.isDeleted) return null;
+          const w = Math.abs(e.width ?? 0) * scale;
+          const h = Math.abs(e.height ?? 0) * scale;
+          const x = sx(e.x);
+          const y = sy(e.y);
+          const outside =
+            e.x < CANVAS_BOUNDS.x ||
+            e.y < CANVAS_BOUNDS.y ||
+            e.x + (e.width ?? 0) > CANVAS_BOUNDS.x + CANVAS_BOUNDS.w ||
+            e.y + (e.height ?? 0) > CANVAS_BOUNDS.y + CANVAS_BOUNDS.h;
+          const fill = outside ? "#f08c8c" : "#7aa2f7";
+          if (e.type === "arrow" || e.type === "line") {
+            return (
+              <line
+                key={e.id}
+                x1={x}
+                y1={y}
+                x2={x + w}
+                y2={y + h}
+                stroke={fill}
+                strokeWidth={1}
+              />
+            );
+          }
+          return (
+            <rect
+              key={e.id}
+              x={x}
+              y={y}
+              width={Math.max(1, w)}
+              height={Math.max(1, h)}
+              fill={fill}
+              opacity={0.85}
+            />
+          );
+        })}
+        {viewRect && (
+          <rect
+            x={viewRect.x}
+            y={viewRect.y}
+            width={viewRect.w}
+            height={viewRect.h}
+            fill="none"
+            stroke="#ffd866"
+            strokeWidth={1.5}
+            strokeDasharray="3 2"
+          />
+        )}
+      </svg>
+    </div>
+  );
+};
+
 const App = () => {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [editorHidden, setEditorHidden] = useState(false);
@@ -132,8 +284,9 @@ const App = () => {
       return DEFAULT_CODE;
     }
   });
+  const [liveElements, setLiveElements] = useState<readonly ExcalidrawElement[]>([]);
+  const [viewport, setViewport] = useState<ViewportInfo | null>(null);
 
-  const applyingFromCanvas = useRef(false);
   const canvasFrozenUntil = useRef(0);
   const lastAppliedSignature = useRef<string>("");
   const lastSerializedFromCanvas = useRef<string>("");
@@ -169,23 +322,17 @@ const App = () => {
   const parsed = useMemo(() => parseDsl(debouncedSource), [debouncedSource]);
 
   // CODE → CANVAS
-  // Depends only on `parsed`; `source` changes alone must not trigger this,
-  // otherwise we'd repeatedly apply an out-of-date scene while the user is
-  // still typing (debounce hasn't fired yet).
+  // Only depends on `parsed`. The canvas→code loop is broken by the
+  // `canvasFrozenUntil` window plus the sig/dsl dedupe in onCanvasChange.
   useEffect(() => {
     if (!api) return;
-    if (applyingFromCanvas.current) {
-      applyingFromCanvas.current = false;
-      return;
-    }
     try {
       const elements = buildScene(parsed);
-      // Freeze the canvas→code path for a tick: updateScene synchronously
-      // fires onChange with re-numbered element versions, which would
-      // otherwise serialise back over the user's hand-written code.
       canvasFrozenUntil.current = Date.now() + 250;
       api.updateScene({ elements });
       lastAppliedSignature.current = sceneSignature(elements);
+      lastSerializedFromCanvas.current = ""; // force next onChange to re-evaluate
+      setLiveElements(elements);
     } catch (err) {
       console.error("[codedraw] buildScene failed", err);
     }
@@ -193,7 +340,25 @@ const App = () => {
 
   // CANVAS → CODE
   const onCanvasChange = useCallback(
-    (elements: readonly ExcalidrawElement[]) => {
+    (
+      elements: readonly ExcalidrawElement[],
+      appState: {
+        scrollX: number;
+        scrollY: number;
+        zoom: { value: number };
+        width: number;
+        height: number;
+      },
+    ) => {
+      setLiveElements(elements);
+      setViewport({
+        scrollX: appState.scrollX,
+        scrollY: appState.scrollY,
+        zoom: appState.zoom.value,
+        width: appState.width,
+        height: appState.height,
+      });
+
       if (Date.now() < canvasFrozenUntil.current) return;
       const sig = sceneSignature(elements);
       if (sig === lastAppliedSignature.current) return;
@@ -204,7 +369,6 @@ const App = () => {
       lastSerializedFromCanvas.current = dsl;
       if (dsl === source) return;
 
-      applyingFromCanvas.current = true;
       setSource(dsl);
     },
     [source],
@@ -212,7 +376,11 @@ const App = () => {
 
   const { width, onMouseDown } = useResizableSplit();
 
-  const errors = parsed.errors;
+  const validationErrors = useMemo(
+    () => validateElements(liveElements),
+    [liveElements],
+  );
+  const errors = [...parsed.errors, ...validationErrors];
 
   return (
     <div className="cd-app">
@@ -263,7 +431,11 @@ const App = () => {
           {errors.length > 0 && (
             <div className="cd-errors">
               {errors
-                .map((e) => `Line ${e.line}: ${e.message}${e.raw ? `  ›  ${e.raw}` : ""}`)
+                .map((e) =>
+                  e.line > 0
+                    ? `Line ${e.line}: ${e.message}${e.raw ? `  ›  ${e.raw}` : ""}`
+                    : `⚠ ${e.message}`,
+                )
                 .join("\n")}
             </div>
           )}
@@ -296,6 +468,7 @@ const App = () => {
               <WelcomeScreen.Hints.HelpHint />
             </WelcomeScreen>
           </Excalidraw>
+          <Minimap elements={liveElements} viewport={viewport} />
         </div>
       </div>
     </div>
