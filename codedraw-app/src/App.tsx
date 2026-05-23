@@ -116,6 +116,7 @@ const sceneSignature = (els: readonly ExcalidrawElement[]): string => {
 
 const App = () => {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
+  const [editorHidden, setEditorHidden] = useState(false);
   const [source, setSource] = useState<string>(() => {
     try {
       return localStorage.getItem(STORAGE_KEY) ?? DEFAULT_CODE;
@@ -138,6 +139,18 @@ const App = () => {
       /* ignore */
     }
   }, [source]);
+
+  // Ctrl+B / Cmd+B → toggle the code panel.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        setEditorHidden((h) => !h);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const parsed = useMemo(() => parseDsl(debouncedSource), [debouncedSource]);
 
@@ -193,9 +206,21 @@ const App = () => {
         <h1>CodeDraw</h1>
         <span style={{ opacity: 0.6 }}>code ⇄ diagram</span>
         <span className="cd-spacer" />
+        <button
+          type="button"
+          className="cd-btn"
+          onClick={() => setEditorHidden((h) => !h)}
+          title={editorHidden ? "Show code panel (Ctrl+B)" : "Hide code panel (Ctrl+B)"}
+        >
+          {editorHidden ? "Show code" : "Hide code"}
+        </button>
       </header>
-      <div className="cd-split" style={{ ["--editor-width" as any]: width }}>
-        <div className="cd-editor">
+      <div
+        className={`cd-split${editorHidden ? " cd-split--canvas-only" : ""}`}
+        style={{ ["--editor-width" as any]: width }}
+      >
+        {!editorHidden && (
+          <div className="cd-editor">
           <Editor
             height="100%"
             language={LANGUAGE_ID}
@@ -220,8 +245,9 @@ const App = () => {
                 .join("\n")}
             </div>
           )}
-        </div>
-        <div className="cd-divider" onMouseDown={onMouseDown} />
+          </div>
+        )}
+        {!editorHidden && <div className="cd-divider" onMouseDown={onMouseDown} />}
         <div className="cd-canvas">
           <Excalidraw
             excalidrawAPI={setApi}
