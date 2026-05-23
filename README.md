@@ -4,7 +4,9 @@
 > with collaboration, Firebase, marketing and the library browser stripped
 > out, plus a live code↔diagram editor and a headless HTTP render API.
 
-**[codedraw.dehlwes.net](https://codedraw.dehlwes.net)**
+[![Live Demo](https://img.shields.io/badge/Live_Demo-codedraw.dehlwes.net-4263eb?style=flat-square&logo=globe&logoColor=white)](https://codedraw.dehlwes.net)
+[![Render API](https://img.shields.io/badge/API-POST_%2Frender-51cf66?style=flat-square&logo=fastify&logoColor=white)](https://codedraw.dehlwes.net/api/render)
+[![MIT License](https://img.shields.io/badge/license-MIT-adb5bd?style=flat-square)](LICENSE)
 
 <table><tr><td width="55%">
 
@@ -214,11 +216,6 @@ write "diagram.png", png
 ```
 
 If `x-codedraw-errors` is non-empty, re-prompt the model with those errors.
-
-## Deployment
-
-Production deploy on Hetzner with Caddy + Docker Compose is documented
-separately: see [**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md).
 
 ## License & credits
 
