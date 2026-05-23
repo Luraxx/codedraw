@@ -290,6 +290,8 @@ const App = () => {
   const canvasFrozenUntil = useRef(0);
   const lastAppliedSignature = useRef<string>("");
   const lastSerializedFromCanvas = useRef<string>("");
+  const lastLiveSignature = useRef<string>("");
+  const lastViewportSig = useRef<string>("");
 
   const [debouncedSource, flushSync] = useDebounced(source, 150);
 
@@ -330,9 +332,11 @@ const App = () => {
       const elements = buildScene(parsed);
       canvasFrozenUntil.current = Date.now() + 250;
       api.updateScene({ elements });
-      lastAppliedSignature.current = sceneSignature(elements);
-      lastSerializedFromCanvas.current = ""; // force next onChange to re-evaluate
-      setLiveElements(elements);
+      // updateScene fires onChange synchronously; lastLiveSignature now
+      // reflects the version numbers Excalidraw assigned to the new elements,
+      // which is what subsequent onChange calls will report.
+      lastAppliedSignature.current = lastLiveSignature.current;
+      lastSerializedFromCanvas.current = serializeScene(elements);
     } catch (err) {
       console.error("[codedraw] buildScene failed", err);
     }
@@ -350,19 +354,26 @@ const App = () => {
         height: number;
       },
     ) => {
-      setLiveElements(elements);
-      setViewport({
-        scrollX: appState.scrollX,
-        scrollY: appState.scrollY,
-        zoom: appState.zoom.value,
-        width: appState.width,
-        height: appState.height,
-      });
+      const liveSig = sceneSignature(elements);
+      if (liveSig !== lastLiveSignature.current) {
+        lastLiveSignature.current = liveSig;
+        setLiveElements(elements);
+      }
+      const vpSig = `${appState.scrollX}|${appState.scrollY}|${appState.zoom.value}|${appState.width}|${appState.height}`;
+      if (vpSig !== lastViewportSig.current) {
+        lastViewportSig.current = vpSig;
+        setViewport({
+          scrollX: appState.scrollX,
+          scrollY: appState.scrollY,
+          zoom: appState.zoom.value,
+          width: appState.width,
+          height: appState.height,
+        });
+      }
 
       if (Date.now() < canvasFrozenUntil.current) return;
-      const sig = sceneSignature(elements);
-      if (sig === lastAppliedSignature.current) return;
-      lastAppliedSignature.current = sig;
+      if (liveSig === lastAppliedSignature.current) return;
+      lastAppliedSignature.current = liveSig;
 
       const dsl = serializeScene(elements);
       if (dsl === lastSerializedFromCanvas.current) return;
