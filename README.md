@@ -4,7 +4,7 @@
 > with collaboration, Firebase, marketing and the library browser stripped
 > out, plus a live code↔diagram editor and a headless HTTP render API.
 
-Live: <https://codedraw.dehlwes.net> · API: <https://codedraw.dehlwes.net/api/>
+**[codedraw.dehlwes.net](https://codedraw.dehlwes.net)**
 
 <table><tr><td width="55%">
 
