@@ -85,6 +85,7 @@ edge done  ~> start { label: "again", color: #1971c2, width: 2, fromSide: right,
 # ──────────────────────────────────────────────────────────
 
 text {
-  content: "CodeDraw — code in, diagram out"
+  content: "codedraw.dehlwes.net"
+  size:    16
 }
 `;

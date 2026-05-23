@@ -158,6 +158,7 @@ const validateElements = (
   for (const e of els) {
     if (e.isDeleted) continue;
     if (e.type === "text") continue; // texts have dynamic size; skip
+    if (e.type === "arrow" || e.type === "line") continue; // connectors can have tiny cross-sections by design
     const w = e.width ?? 0;
     const h = e.height ?? 0;
     const minSide = Math.min(Math.abs(w), Math.abs(h));
