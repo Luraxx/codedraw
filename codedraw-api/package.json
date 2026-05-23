@@ -9,6 +9,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@fastify/rate-limit": "9",
     "fastify": "4.28.1",
     "playwright": "1.49.1"
   },

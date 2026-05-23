@@ -329,3 +329,127 @@ Code → canvas → code produces identical output for any well-formed input (po
 | `codedraw-app/src/dsl/serialize.ts` | `ExcalidrawElement[]` → DSL string |
 | `codedraw-app/src/defaultCode.ts` | default diagram shown on first load |
 | `codedraw-app/src/App.tsx` | React glue; localStorage key `codedraw.code.v1` |
+| `codedraw-app/src/render.ts` | SPA-side `renderSvg` / `renderPng` / `renderJson` |
+| `codedraw-api/src/index.ts` | Fastify + Playwright server exposing `POST /render` |
+
+---
+
+## HTTP render API
+
+The companion `codedraw-api` service renders DSL headlessly via Playwright.
+
+**Endpoint:** `POST /render`
+**Production:** `https://codedraw.dehlwes.net/api/render`
+**Local dev:**  `http://localhost:3010/render`
+
+### Request body
+
+| key | type | default | description |
+|-----|------|---------|-------------|
+| `code` | string | — | DSL source (required) |
+| `format` | `"png"` \| `"svg"` \| `"json"` | `"png"` | output format |
+| `theme` | `"light"` \| `"dark"` | `"light"` | dark theme also inverts the default ink color so strokes/text stay visible |
+| `background` | color \| `"transparent"` | white (`#ffffff`) or dark (`#121212`) | canvas background; `"transparent"` removes the background and falls back to the theme default during preview |
+| `scale` | number `0.25`–`5` | `1` | PNG only — pixel density multiplier |
+| `padding` | number | `20` | viewport padding around the diagram |
+
+### Responses
+
+- `200` `image/png` — when `format:"png"` (binary)
+- `200` `image/svg+xml` — when `format:"svg"`
+- `200` `application/json` — `{ elements, errors, type, version, source }` (Excalidraw scene)
+- `400` — DSL parse errors (returned as JSON `{ errors }`)
+- `500` — Playwright / render failure
+
+### Examples
+
+```bash
+# PNG, dark theme, hires
+curl -X POST http://localhost:3010/render \
+  -H 'content-type: application/json' \
+  -d '{"code":"node a\nnode b\nedge a -> b","format":"png","theme":"dark","scale":2}' \
+  --output diagram.png
+
+# SVG with custom background
+curl -X POST http://localhost:3010/render \
+  -H 'content-type: application/json' \
+  -d '{"code":"node x","format":"svg","background":"#fef3c7"}'
+
+# Raw Excalidraw JSON (for further processing)
+curl -X POST http://localhost:3010/render \
+  -H 'content-type: application/json' \
+  -d '{"code":"node x -> y","format":"json"}'
+```
+
+---
+
+## Behaviors & rendering rules
+
+These are the implementation details an AI assistant needs to predict what a
+DSL fragment will produce on the canvas.
+
+### Node auto-sizing
+
+If neither `size:` nor `at:` constrains a node, its box auto-grows from the
+label so long labels are never clipped:
+
+- Width  = `max(180, longestLine * 11 + 56)`
+- Height = `max(80,  lineCount  * 25 + 48)`
+- `diamond` shapes are scaled to `145 %`, `ellipse` to `120 %` so the label fits inside the inscribed area.
+
+Multi-line labels (use `\n` inside a quoted string) grow the box vertically.
+
+### Self-loops
+
+`edge x -> x` (or `~>` / `--`) emits an arc that leaves the **top** of `x`,
+loops upward, and re-enters the top. The optional `label:` is placed above
+the arc. Excalidraw cannot route an arrow with `start == end`, so this is
+synthesised as an unbound 4-point polyline.
+
+### Auto-routed back-edges
+
+Under auto-layout (any node without `at:`), if a straight `edge a -> b`
+points "upward" (target sits above the source after dagre layout), the
+arrow is re-routed as a 3-segment polyline that detours around the
+**right** side of every intermediate rank, so it never cuts through
+unrelated nodes. The `label:` is placed at the detour midpoint.
+
+To opt out of the detour: pin nodes manually with `at:`, or use the elbow
+operator `~>` so Excalidraw's elbow router handles routing.
+
+### Dark theme color inversion
+
+When `theme:"dark"` is requested via the render API, every element whose
+`strokeColor` equals the default ink (`#1e1e1e`) is swapped to a light tone
+(`#e6e6e6`) before export. User-supplied colors are left untouched, so you
+can still author dark-theme-aware palettes explicitly.
+
+### Edge-label rendering
+
+Labels on `--` (line) edges are emitted as free `text` elements above the
+midpoint, because Excalidraw silently drops `boundElements` labels on
+`line` type. Labels on `->` and `~>` use Excalidraw's native bound text.
+
+### Comments
+
+`#` starts a comment that runs to end-of-line — either on its own line or
+trailing a statement. Use `text { content: "..." }` for on-canvas
+annotations.
+
+### String escapes (inside `"…"`)
+
+| escape | result |
+|--------|--------|
+| `\n`   | newline (renders as a line break inside labels / text) |
+| `\t`   | tab |
+| `\r`   | carriage return |
+| `\"`   | literal `"` |
+| `\\`   | literal `\` |
+
+### Layout coordinate origin
+
+Auto-laid-out scenes are centred around `(0, 0)` (Excalidraw's viewport
+origin) so generated diagrams appear in the middle of the canvas on first
+load. As soon as **any** node uses `at:`, all coordinates are treated as
+absolute and no centering shift is applied.
+

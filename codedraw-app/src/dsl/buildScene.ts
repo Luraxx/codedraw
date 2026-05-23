@@ -20,6 +20,36 @@ const DEFAULT_W = 180;
 const DEFAULT_H = 80;
 const STROKE_GAP = 4;
 
+// Approximate glyph width @ font-size 20 in Excalidraw's Virgil/Cascadia
+// font fallback. Used only to auto-grow nodes whose user-supplied label
+// would otherwise overflow the default box. We don't measure precisely
+// because we're not in a DOM here.
+const CHAR_W = 11;
+const LINE_H = 25;
+const NODE_PAD_X = 28;
+const NODE_PAD_Y = 24;
+
+const measureLabel = (
+  label: string | undefined,
+  shape: NodeShape | undefined,
+): { w: number; h: number } => {
+  if (!label) return { w: DEFAULT_W, h: DEFAULT_H };
+  const lines = label.split("\n");
+  const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  let w = Math.max(DEFAULT_W, longest * CHAR_W + NODE_PAD_X * 2);
+  let h = Math.max(DEFAULT_H, lines.length * LINE_H + NODE_PAD_Y * 2);
+  // Diamond clips labels at its corners — grow generously so text fits
+  // inside the inscribed rectangle (~70% of bbox each axis).
+  if (shape === "diamond") {
+    w = Math.round(w * 1.45);
+    h = Math.round(h * 1.45);
+  } else if (shape === "ellipse") {
+    w = Math.round(w * 1.2);
+    h = Math.round(h * 1.2);
+  }
+  return { w, h };
+};
+
 interface NodeBox {
   x: number;
   y: number;
@@ -147,9 +177,10 @@ export const buildScene = (
     });
     g.setDefaultEdgeLabel(() => ({}));
     for (const n of parsed.nodes) {
+      const m = measureLabel(n.label, n.shape);
       g.setNode(n.id, {
-        width: n.width ?? DEFAULT_W,
-        height: n.height ?? DEFAULT_H,
+        width: n.width ?? m.w,
+        height: n.height ?? m.h,
       });
     }
     for (const e of parsed.edges) {
@@ -157,8 +188,9 @@ export const buildScene = (
     }
     dagre.layout(g);
     for (const n of parsed.nodes) {
-      const w = n.width ?? DEFAULT_W;
-      const h = n.height ?? DEFAULT_H;
+      const m = measureLabel(n.label, n.shape);
+      const w = n.width ?? m.w;
+      const h = n.height ?? m.h;
       if (n.x !== undefined && n.y !== undefined) {
         boxes.set(n.id, { x: n.x, y: n.y, w, h, shape: n.shape });
       } else {
@@ -174,11 +206,12 @@ export const buildScene = (
     }
   } else {
     for (const n of parsed.nodes) {
+      const m = measureLabel(n.label, n.shape);
       boxes.set(n.id, {
         x: n.x ?? 0,
         y: n.y ?? 0,
-        w: n.width ?? DEFAULT_W,
-        h: n.height ?? DEFAULT_H,
+        w: n.width ?? m.w,
+        h: n.height ?? m.h,
         shape: n.shape,
       });
     }
@@ -245,6 +278,43 @@ export const buildScene = (
     const type: "arrow" | "line" = isLine ? "line" : "arrow";
 
     if (fromBox && toBox) {
+      // Self-loop: Excalidraw can't auto-route start==end on the same
+      // node, so emit an unbound polyline that arcs above the node.
+      if (e.from === e.to) {
+        const sx = fromBox.x + fromBox.w * 0.35;
+        const sy = fromBox.y - STROKE_GAP;
+        const loopH = 40;
+        const loopW = fromBox.w * 0.3;
+        const skel: Record<string, unknown> = {
+          type,
+          x: sx,
+          y: sy,
+          points: [
+            [0, 0],
+            [0, -loopH],
+            [loopW, -loopH],
+            [loopW, 0],
+          ],
+          strokeColor: "#1e1e1e",
+        };
+        if (isElbow) {
+          // Elbow router with manual points: keep as plain polyline.
+        }
+        if (e.label) {
+          skeleton.push({
+            type: "text",
+            x: sx + loopW / 2 - (e.label.length * 5),
+            y: sy - loopH - 22,
+            text: e.label,
+            fontSize: 16,
+          } as Skel);
+        }
+        applyLinearStyleToSkel(skel, e, {
+          endArrowhead: isLine ? "none" : "default",
+        });
+        skeleton.push(skel as Skel);
+        continue;
+      }
       const fcx = fromBox.x + fromBox.w / 2;
       const fcy = fromBox.y + fromBox.h / 2;
       const tcx = toBox.x + toBox.w / 2;
@@ -274,6 +344,48 @@ export const buildScene = (
       };
       let start: { x: number; y: number };
       let end: { x: number; y: number };
+      // Back-edge in auto-layout: target sits above the source. Routing a
+      // straight arrow would cut through any nodes ranked between them.
+      // Re-route around the right side as a 3-segment unbound polyline.
+      const isBackEdge =
+        !isElbow &&
+        needsAutoLayout &&
+        toBox.y + toBox.h <= fromBox.y &&
+        e.from !== e.to;
+      if (isBackEdge) {
+        const startAnchor = sideAnchor(fromBox, "right");
+        const endAnchor = sideAnchor(toBox, "right");
+        const detourX =
+          Math.max(fromBox.x + fromBox.w, toBox.x + toBox.w) + 40;
+        const sx = startAnchor.x;
+        const sy = startAnchor.y;
+        const skel: Record<string, unknown> = {
+          type,
+          x: sx,
+          y: sy,
+          points: [
+            [0, 0],
+            [detourX - sx, 0],
+            [detourX - sx, endAnchor.y - sy],
+            [endAnchor.x - sx, endAnchor.y - sy],
+          ],
+          strokeColor: "#1e1e1e",
+        };
+        if (e.label) {
+          skeleton.push({
+            type: "text",
+            x: detourX + 6,
+            y: (sy + endAnchor.y) / 2 - 10,
+            text: e.label,
+            fontSize: 16,
+          } as Skel);
+        }
+        applyLinearStyleToSkel(skel, e, {
+          endArrowhead: isLine ? "none" : "default",
+        });
+        skeleton.push(skel as Skel);
+        continue;
+      }
       if (isElbow) {
         const dx = tcx - fcx;
         const dy = tcy - fcy;
@@ -315,13 +427,13 @@ export const buildScene = (
         skel.roundness = null;
       }
       // Excalidraw drops `boundElements` labels on `line` type; emit a
-      // free text element at the midpoint instead so the label still shows.
+      // free text element above the segment midpoint so the label still shows.
       if (e.label) {
         if (isLine) {
           skeleton.push({
             type: "text",
-            x: (sx + ex) / 2,
-            y: (sy + ey) / 2 - 12,
+            x: (sx + ex) / 2 - e.label.length * 4,
+            y: (sy + ey) / 2 - 22,
             text: e.label,
             fontSize: 16,
           } as Skel);
@@ -376,8 +488,8 @@ export const buildScene = (
       if (isLine) {
         skeleton.push({
           type: "text",
-          x: (a.fromX + a.toX) / 2,
-          y: (a.fromY + a.toY) / 2 - 12,
+          x: (a.fromX + a.toX) / 2 - a.label.length * 4,
+          y: (a.fromY + a.toY) / 2 - 22,
           text: a.label,
           fontSize: 16,
         } as Skel);

@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import { chromium, type Browser, type Page } from "playwright";
 
 declare global {
@@ -17,6 +18,26 @@ const HOST = process.env.HOST ?? "0.0.0.0";
 const API_KEY = process.env.CODEDRAW_API_KEY ?? "";
 const MAX_CODE_BYTES = Number(process.env.CODEDRAW_MAX_CODE_BYTES ?? 64 * 1024);
 const RENDER_TIMEOUT_MS = Number(process.env.CODEDRAW_RENDER_TIMEOUT_MS ?? 15000);
+const RATE_LIMIT_MAX = Number(process.env.CODEDRAW_RATE_LIMIT_MAX ?? 30);
+const RATE_LIMIT_WINDOW_MS = Number(
+  process.env.CODEDRAW_RATE_LIMIT_WINDOW_MS ?? 60_000,
+);
+const RATE_LIMIT_GLOBAL_MAX = Number(
+  process.env.CODEDRAW_RATE_LIMIT_GLOBAL_MAX ?? 300,
+);
+
+// Strict whitelists for free-form user input that ends up either in headers,
+// embedded in SVG output, or in Excalidraw appState. Anything that doesn't
+// match these patterns is rejected at the request boundary.
+const COLOR_RE = /^#(?:[0-9a-fA-F]{3,8})$/;
+const THEME_VALUES = new Set(["light", "dark"]);
+const FORMAT_VALUES = new Set(["png", "svg", "json"]);
+
+// HTTP header values must not contain CR/LF (header injection) or other
+// control characters. Errors from the parser are user-controlled text, so
+// strip everything that's unsafe before stuffing it into a response header.
+const sanitizeHeader = (value: string): string =>
+  value.replace(/[\r\n\t\u0000-\u001f\u007f]/g, " ").slice(0, 4096);
 
 interface RenderBody {
   code: string;
@@ -72,6 +93,31 @@ const runQueued = <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const app = Fastify({ bodyLimit: MAX_CODE_BYTES + 16 * 1024, logger: true });
+
+// Per-IP spam protection. Applied to all routes; expensive POST /render
+// path is additionally protected by an in-process queue (see runQueued).
+await app.register(rateLimit, {
+  max: RATE_LIMIT_MAX,
+  timeWindow: RATE_LIMIT_WINDOW_MS,
+  global: true,
+  cache: 10_000,
+  // Combine with a global cap so a swarm of distinct IPs still can't
+  // saturate the single Playwright page.
+  hook: "preHandler",
+  keyGenerator: (req) => req.ip,
+});
+// Global concurrency cap shared across IPs.
+let globalWindow: { start: number; count: number } = { start: Date.now(), count: 0 };
+app.addHook("preHandler", async (_req, reply) => {
+  const now = Date.now();
+  if (now - globalWindow.start > RATE_LIMIT_WINDOW_MS) {
+    globalWindow = { start: now, count: 0 };
+  }
+  globalWindow.count += 1;
+  if (globalWindow.count > RATE_LIMIT_GLOBAL_MAX) {
+    reply.code(503).send({ error: "server busy, retry later" });
+  }
+});
 
 app.addHook("preHandler", async (req, reply) => {
   if (!API_KEY) return;
@@ -185,8 +231,32 @@ app.post<{ Body: RenderBody }>("/render", async (req, reply) => {
   if (Buffer.byteLength(code, "utf8") > MAX_CODE_BYTES) {
     return reply.code(413).send({ error: "code too large" });
   }
-  if (!["svg", "png", "json"].includes(format)) {
+  if (!FORMAT_VALUES.has(format)) {
     return reply.code(400).send({ error: "invalid format" });
+  }
+  if (theme !== undefined && !THEME_VALUES.has(theme)) {
+    return reply.code(400).send({ error: "invalid theme" });
+  }
+  if (
+    background !== undefined &&
+    background !== "transparent" &&
+    !COLOR_RE.test(background)
+  ) {
+    return reply
+      .code(400)
+      .send({ error: "invalid background (expected #hex or 'transparent')" });
+  }
+  if (
+    scale !== undefined &&
+    (typeof scale !== "number" || !Number.isFinite(scale) || scale < 0.25 || scale > 5)
+  ) {
+    return reply.code(400).send({ error: "invalid scale (0.25–5)" });
+  }
+  if (
+    padding !== undefined &&
+    (typeof padding !== "number" || !Number.isFinite(padding) || padding < 0 || padding > 500)
+  ) {
+    return reply.code(400).send({ error: "invalid padding (0–500)" });
   }
 
   return runQueued(async () => {
@@ -199,7 +269,7 @@ app.post<{ Body: RenderBody }>("/render", async (req, reply) => {
         [code, opts] as const,
       );
       reply.header("content-type", "image/svg+xml; charset=utf-8");
-      reply.header("x-codedraw-errors", JSON.stringify(result.errors));
+      reply.header("x-codedraw-errors", sanitizeHeader(JSON.stringify(result.errors)));
       return result.svg;
     }
 
@@ -220,7 +290,7 @@ app.post<{ Body: RenderBody }>("/render", async (req, reply) => {
     const buf = Buffer.from(result.base64, "base64");
     reply.header("content-type", "image/png");
     reply.header("content-length", buf.byteLength);
-    reply.header("x-codedraw-errors", JSON.stringify(result.errors));
+    reply.header("x-codedraw-errors", sanitizeHeader(JSON.stringify(result.errors)));
     return reply.send(buf);
   });
 });

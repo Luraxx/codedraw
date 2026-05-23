@@ -168,7 +168,7 @@ const parseString = (raw: string): string | null => {
     if (c === '"') return out;
     if (c === "\\" && i + 1 < raw.length) {
       const n = raw[i + 1];
-      out += n === "n" ? "\n" : n;
+      out += n === "n" ? "\n" : n === "t" ? "\t" : n === "r" ? "\r" : n;
       i += 2;
       continue;
     }

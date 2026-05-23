@@ -17,9 +17,13 @@ export interface RenderOptions {
 }
 
 const buildAppState = (opts: RenderOptions): Partial<AppState> => {
-  const background = opts.background ?? "#ffffff";
+  // When theme=dark and no explicit background is provided, default to a
+  // dark canvas — otherwise dark-theme strokes (light grey) render almost
+  // invisibly on the default white background.
+  const defaultBg = opts.theme === "dark" ? "#121212" : "#ffffff";
+  const background = opts.background ?? defaultBg;
   return {
-    viewBackgroundColor: background === "transparent" ? "#ffffff" : background,
+    viewBackgroundColor: background === "transparent" ? defaultBg : background,
     exportBackground: background !== "transparent",
     exportScale: Math.min(5, Math.max(0.25, opts.scale ?? 1)),
     theme: opts.theme ?? "light",
@@ -50,13 +54,34 @@ const parseAndBuild = (code: string): ParsePayload => {
   return { ok: parsed.errors.length === 0, errors: parsed.errors, elements };
 };
 
+// Default ink color used by buildScene. When exporting in dark theme we
+// swap any occurrence with a light tone so strokes and text stay legible
+// on the dark canvas. User-specified colors (anything other than the
+// default) are left untouched.
+const DEFAULT_INK = "#1e1e1e";
+const DARK_INK = "#e6e6e6";
+
+const adaptForTheme = (
+  elements: readonly ExcalidrawElement[],
+  theme: "light" | "dark" | undefined,
+): readonly ExcalidrawElement[] => {
+  if (theme !== "dark") return elements;
+  return elements.map((el) => {
+    const next = { ...el } as ExcalidrawElement;
+    if ((next as { strokeColor?: string }).strokeColor === DEFAULT_INK) {
+      (next as { strokeColor?: string }).strokeColor = DARK_INK;
+    }
+    return next;
+  });
+};
+
 export const renderSvg = async (
   code: string,
   opts: RenderOptions = {},
 ): Promise<{ svg: string; errors: ParsePayload["errors"] }> => {
   const { elements, errors } = parseAndBuild(code);
   const svg = await exportToSvg({
-    elements,
+    elements: adaptForTheme(elements, opts.theme),
     appState: buildAppState(opts),
     files: {},
     exportPadding: opts.padding ?? 20,
@@ -69,12 +94,18 @@ export const renderPng = async (
   opts: RenderOptions = {},
 ): Promise<{ base64: string; errors: ParsePayload["errors"] }> => {
   const { elements, errors } = parseAndBuild(code);
+  const scale = Math.min(5, Math.max(0.25, opts.scale ?? 1));
   const blob = await exportToBlob({
-    elements,
+    elements: adaptForTheme(elements, opts.theme),
     appState: buildAppState(opts),
     files: {},
     exportPadding: opts.padding ?? 20,
     mimeType: "image/png",
+    getDimensions: (width, height) => ({
+      width: Math.round(width * scale),
+      height: Math.round(height * scale),
+      scale,
+    }),
   });
   return { base64: await blobToBase64(blob), errors };
 };
