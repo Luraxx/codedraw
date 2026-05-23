@@ -1,0 +1,101 @@
+:root {
+  --cd-bg: #1e1e1e;
+  --cd-panel: #252526;
+  --cd-border: #2d2d30;
+  --cd-text: #d4d4d4;
+  --cd-error: #f48771;
+  --cd-accent: #4dabf7;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--cd-bg);
+  color: var(--cd-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  overflow: hidden;
+}
+
+.cd-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.cd-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--cd-panel);
+  border-bottom: 1px solid var(--cd-border);
+  font-size: 14px;
+}
+
+.cd-header h1 {
+  font-size: 16px;
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.cd-header .cd-spacer {
+  flex: 1;
+}
+
+.cd-header a {
+  color: var(--cd-accent);
+  text-decoration: none;
+}
+.cd-header a:hover {
+  text-decoration: underline;
+}
+
+.cd-split {
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--editor-width, 40%) 6px 1fr;
+  min-height: 0;
+}
+
+.cd-divider {
+  background: var(--cd-border);
+  cursor: col-resize;
+  transition: background 0.15s;
+}
+.cd-divider:hover {
+  background: var(--cd-accent);
+}
+
+.cd-editor {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cd-canvas {
+  position: relative;
+  min-width: 0;
+  background: #fff;
+}
+
+.cd-errors {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 30%;
+  overflow: auto;
+  padding: 8px 12px;
+  background: rgba(244, 135, 113, 0.12);
+  border-top: 1px solid var(--cd-error);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--cd-error);
+  white-space: pre-wrap;
+}
