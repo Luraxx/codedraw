@@ -14,7 +14,7 @@ import { serializeScene } from "./dsl/serialize";
 import { DEFAULT_CODE } from "./defaultCode";
 import "./app.css";
 
-const STORAGE_KEY = "codedraw:source:v3";
+const STORAGE_KEY = "codedraw:source:v4";
 const LANGUAGE_ID = "codedraw";
 
 const registerCodedrawLanguage = (monaco: Monaco) => {
@@ -125,6 +125,7 @@ const App = () => {
   });
 
   const applyingFromCanvas = useRef(false);
+  const canvasFrozenUntil = useRef(0);
   const lastAppliedSignature = useRef<string>("");
   const lastSerializedFromCanvas = useRef<string>("");
 
@@ -140,6 +141,10 @@ const App = () => {
 
   const parsed = useMemo(() => parseDsl(debouncedSource), [debouncedSource]);
 
+  // CODE → CANVAS
+  // Depends only on `parsed`; `source` changes alone must not trigger this,
+  // otherwise we'd repeatedly apply an out-of-date scene while the user is
+  // still typing (debounce hasn't fired yet).
   useEffect(() => {
     if (!api) return;
     if (applyingFromCanvas.current) {
@@ -148,16 +153,21 @@ const App = () => {
     }
     try {
       const elements = buildScene(parsed);
+      // Freeze the canvas→code path for a tick: updateScene synchronously
+      // fires onChange with re-numbered element versions, which would
+      // otherwise serialise back over the user's hand-written code.
+      canvasFrozenUntil.current = Date.now() + 250;
       api.updateScene({ elements });
       lastAppliedSignature.current = sceneSignature(elements);
-      lastSerializedFromCanvas.current = source;
     } catch (err) {
       console.error("[codedraw] buildScene failed", err);
     }
-  }, [api, parsed, source]);
+  }, [api, parsed]);
 
+  // CANVAS → CODE
   const onCanvasChange = useCallback(
     (elements: readonly ExcalidrawElement[]) => {
+      if (Date.now() < canvasFrozenUntil.current) return;
       const sig = sceneSignature(elements);
       if (sig === lastAppliedSignature.current) return;
       lastAppliedSignature.current = sig;

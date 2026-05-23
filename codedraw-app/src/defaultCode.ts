@@ -10,7 +10,10 @@ export const DEFAULT_CODE = `# CodeDraw DSL — type code on the left, see the d
 #   text  { content: "...", at, size }    free text
 #
 # Shapes: rectangle (default), ellipse, diamond
-# The { ... } block is optional when no attributes are needed.
+
+# ──────────────────────────────────────────────────────────
+# Nodes
+# ──────────────────────────────────────────────────────────
 
 node start {
   label: "Start"
@@ -44,12 +47,20 @@ node done {
   fill:  #b2f2bb
 }
 
+# ──────────────────────────────────────────────────────────
+# Edges
+# ──────────────────────────────────────────────────────────
+
 edge start -> input
 edge input -> check
 edge check -> work  { label: "yes" }
 edge check -> error { label: "no" }
 edge work  -> done
 edge error -> input { label: "retry" }
+
+# ──────────────────────────────────────────────────────────
+# Text
+# ──────────────────────────────────────────────────────────
 
 text {
   content: "CodeDraw — code in, diagram out"

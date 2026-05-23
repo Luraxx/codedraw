@@ -174,8 +174,21 @@ export const serializeScene = (
     textBlocks.push(serializeText(t));
   }
 
-  const sections = [nodeBlocks, edgeBlocks, freeBlocks, textBlocks].filter(
-    (s) => s.length,
-  );
-  return sections.map((s) => s.join("\n\n")).join("\n\n");
+  const sections: { title: string; blocks: string[] }[] = [
+    { title: "Nodes", blocks: nodeBlocks },
+    { title: "Edges", blocks: edgeBlocks },
+    { title: "Free shapes", blocks: freeBlocks },
+    { title: "Text", blocks: textBlocks },
+  ].filter((s) => s.blocks.length > 0);
+
+  if (sections.length === 0) return "";
+
+  const HEADER_RULE =
+    "# ──────────────────────────────────────────────────────────";
+  return sections
+    .map(
+      (s) =>
+        `${HEADER_RULE}\n# ${s.title}\n${HEADER_RULE}\n\n${s.blocks.join("\n\n")}`,
+    )
+    .join("\n\n");
 };
