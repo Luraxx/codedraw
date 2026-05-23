@@ -10,6 +10,7 @@ COPY .npmrc ./
 COPY tsconfig.json ./
 COPY .env.development .env.production ./
 COPY codedraw-app/package.json codedraw-app/
+COPY codedraw-api/package.json codedraw-api/
 COPY packages/common/package.json packages/common/
 COPY packages/element/package.json packages/element/
 COPY packages/excalidraw/package.json packages/excalidraw/
