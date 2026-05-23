@@ -6,7 +6,7 @@
 
 Live: <https://codedraw.dehlwes.net> · API: <https://codedraw-api.dehlwes.net>
 
-<table><tr><td>
+<table><tr><td width="55%">
 
 ```
 node start { label: "Start"      shape: ellipse  fill: #b2f2bb }
@@ -27,9 +27,9 @@ edge done  ~> start { label: "again" color: #1971c2
                       fromSide: right toSide: right }
 ```
 
-</td><td>
+</td><td width="45%">
 
-<img src="codedraw-app/public/image.png" width="340" alt="generated diagram"/>
+<img src="https://raw.githubusercontent.com/Luraxx/codedraw/main/codedraw-app/public/image.png" width="420" alt="generated diagram"/>
 
 </td></tr></table>
 
