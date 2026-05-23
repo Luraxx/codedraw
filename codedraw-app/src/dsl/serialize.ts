@@ -53,33 +53,113 @@ const escapeString = (s: string) =>
 
 const indent = (s: string) => s.split("\n").map((l) => "  " + l).join("\n");
 
+const ARROWHEAD_NAME: Record<string, string> = {
+  arrow: "arrow",
+  triangle: "triangle",
+  bar: "bar",
+  dot: "dot",
+};
+
+const arrowheadToken = (head: unknown): string | null => {
+  if (head === null || head === undefined) return null;
+  if (typeof head !== "string") return null;
+  return ARROWHEAD_NAME[head] ?? null;
+};
+
 const serializeNode = (
   el: ExcalidrawElement,
   id: string,
   label: string,
 ): string => {
   const lines: string[] = [];
-  if (label && label !== id) lines.push(`label:  "${escapeString(label)}"`);
-  if (el.type !== "rectangle") lines.push(`shape:  ${el.type}`);
+  if (label && label !== id) lines.push(`label:       "${escapeString(label)}"`);
+  if (el.type !== "rectangle") lines.push(`shape:       ${el.type}`);
   if (!isTransparent(el.backgroundColor)) {
-    lines.push(`fill:   ${el.backgroundColor}`);
+    lines.push(`fill:        ${el.backgroundColor}`);
   }
   if (el.strokeColor && el.strokeColor !== "#1e1e1e") {
-    lines.push(`stroke: ${el.strokeColor}`);
+    lines.push(`stroke:      ${el.strokeColor}`);
   }
-  lines.push(`at:     ${round(el.x)}, ${round(el.y)}`);
-  lines.push(`size:   ${round(el.width)}, ${round(el.height)}`);
+  if (el.strokeWidth && el.strokeWidth !== 2) {
+    lines.push(`strokeWidth: ${el.strokeWidth}`);
+  }
+  if (el.strokeStyle && el.strokeStyle !== "solid") {
+    lines.push(`strokeStyle: ${el.strokeStyle}`);
+  }
+  if (el.roughness !== undefined && el.roughness !== 1) {
+    lines.push(`roughness:   ${el.roughness}`);
+  }
+  lines.push(`at:          ${round(el.x)}, ${round(el.y)}`);
+  lines.push(`size:        ${round(el.width)}, ${round(el.height)}`);
   return `node ${id} {\n${indent(lines.join("\n"))}\n}`;
 };
 
+const linearStyleLines = (
+  e: ExcalidrawLinearElement,
+  kind: "arrow" | "line" | "elbow",
+): string[] => {
+  const lines: string[] = [];
+  if (e.strokeColor && e.strokeColor !== "#1e1e1e") {
+    lines.push(`color:     ${e.strokeColor}`);
+  }
+  if (e.strokeWidth && e.strokeWidth !== 2) {
+    lines.push(`width:     ${e.strokeWidth}`);
+  }
+  if (e.strokeStyle && e.strokeStyle !== "solid") {
+    lines.push(`style:     ${e.strokeStyle}`);
+  }
+  if (e.roughness !== undefined && e.roughness !== 1) {
+    lines.push(`roughness: ${e.roughness}`);
+  }
+  const start = arrowheadToken((e as any).startArrowhead);
+  if (start) lines.push(`startHead: ${start}`);
+  const defaultEnd = kind === "line" ? null : "arrow";
+  const endRaw = (e as any).endArrowhead;
+  if (endRaw === null && defaultEnd !== null) {
+    lines.push(`endHead:   none`);
+  } else if (typeof endRaw === "string" && endRaw !== defaultEnd) {
+    const tok = arrowheadToken(endRaw);
+    if (tok) lines.push(`endHead:   ${tok}`);
+  }
+  return lines;
+};
+
+const sideFromFixedPoint = (
+  fp: readonly [number, number] | undefined | null,
+): "top" | "right" | "bottom" | "left" | null => {
+  if (!fp) return null;
+  const [x, y] = fp;
+  if (y < 0) return "top";
+  if (y > 1) return "bottom";
+  if (x < 0) return "left";
+  if (x > 1) return "right";
+  return null;
+};
+
 const serializeEdge = (
+  e: ExcalidrawLinearElement,
   from: string,
   to: string,
-  op: "->" | "--",
+  op: "->" | "--" | "~>",
   label: string,
 ): string => {
-  if (!label) return `edge ${from} ${op} ${to}`;
-  return `edge ${from} ${op} ${to} {\n  label: "${escapeString(label)}"\n}`;
+  const kind: "arrow" | "line" | "elbow" =
+    op === "--" ? "line" : op === "~>" ? "elbow" : "arrow";
+  const lines: string[] = [];
+  if (label) lines.push(`label:     "${escapeString(label)}"`);
+  if (kind === "elbow") {
+    const fs = sideFromFixedPoint(
+      (e.startBinding as { fixedPoint?: [number, number] } | null)?.fixedPoint,
+    );
+    const ts = sideFromFixedPoint(
+      (e.endBinding as { fixedPoint?: [number, number] } | null)?.fixedPoint,
+    );
+    if (fs) lines.push(`fromSide:  ${fs}`);
+    if (ts) lines.push(`toSide:    ${ts}`);
+  }
+  lines.push(...linearStyleLines(e, kind));
+  if (lines.length === 0) return `edge ${from} ${op} ${to}`;
+  return `edge ${from} ${op} ${to} {\n${indent(lines.join("\n"))}\n}`;
 };
 
 const linearEndpoints = (l: ExcalidrawLinearElement) => {
@@ -96,19 +176,20 @@ const linearEndpoints = (l: ExcalidrawLinearElement) => {
 };
 
 const serializeFreeLinear = (
-  kind: "arrow" | "line",
+  kind: "arrow" | "line" | "elbow",
   e: ExcalidrawLinearElement,
   label: string,
 ): string => {
   const pts = linearEndpoints(e);
   if (!pts) return "";
-  const lines = [
-    `from:  ${round(pts.fromX)}, ${round(pts.fromY)}`,
-    `to:    ${round(pts.toX)}, ${round(pts.toY)}`,
+  const lines: string[] = [
+    `from:      ${round(pts.fromX)}, ${round(pts.fromY)}`,
+    `to:        ${round(pts.toX)}, ${round(pts.toY)}`,
   ];
-  if (label && kind === "arrow") {
-    lines.push(`label: "${escapeString(label)}"`);
+  if (label && kind !== "line") {
+    lines.push(`label:     "${escapeString(label)}"`);
   }
+  lines.push(...linearStyleLines(e, kind));
   return `${kind} {\n${indent(lines.join("\n"))}\n}`;
 };
 
@@ -150,6 +231,7 @@ export const serializeScene = (
   for (const e of live) {
     if (e.type !== "arrow" && e.type !== "line") continue;
     const linear = e as ExcalidrawLinearElement;
+    const isElbow = e.type === "arrow" && (e as any).elbowed === true;
     const fromId = linear.startBinding?.elementId;
     const toId = linear.endBinding?.elementId;
     const label = labelFor(e, byId);
@@ -159,9 +241,13 @@ export const serializeScene = (
     ) {
       const from = idMap.get(fromId)!;
       const to = idMap.get(toId)!;
-      edgeBlocks.push(serializeEdge(from, to, e.type === "arrow" ? "->" : "--", label));
+      const op: "->" | "--" | "~>" =
+        e.type === "line" ? "--" : isElbow ? "~>" : "->";
+      edgeBlocks.push(serializeEdge(linear, from, to, op, label));
     } else {
-      const block = serializeFreeLinear(e.type, linear, label);
+      const kind: "arrow" | "line" | "elbow" =
+        e.type === "line" ? "line" : isElbow ? "elbow" : "arrow";
+      const block = serializeFreeLinear(kind, linear, label);
       if (block) freeBlocks.push(block);
     }
   }

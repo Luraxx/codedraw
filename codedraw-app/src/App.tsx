@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Editor, { type Monaco } from "@monaco-editor/react";
+import Editor, { loader, type Monaco } from "@monaco-editor/react";
+
+// Pin Monaco loader to a versioned CDN; avoids spurious *.js.map 404s from
+// the default unpkg HEAD URL and gives us reproducible builds.
+loader.config({
+  paths: {
+    vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs",
+  },
+});
 import {
   Excalidraw,
   MainMenu,
@@ -126,7 +134,10 @@ const sceneSignature = (els: readonly ExcalidrawElement[]): string => {
 // Elements outside this rectangle (or larger/smaller than the size bounds
 // below) trigger a validation error in the code panel so authors notice
 // before the diagram drifts off-screen.
-const CANVAS_BOUNDS = { x: 0, y: 0, w: 4000, h: 3000 } as const;
+// Canvas is centred on (0,0) so code-generated diagrams (which buildScene
+// auto-centres at the origin) sit in the middle of the bounded area and
+// don't get falsely flagged as "outside the canvas".
+const CANVAS_BOUNDS = { x: -2000, y: -1500, w: 4000, h: 3000 } as const;
 const MIN_ELEMENT_SIZE = 5;
 const MAX_ELEMENT_SIZE = 2500;
 
@@ -185,9 +196,11 @@ const validateElements = (
 const Minimap = ({
   elements,
   viewport,
+  backgroundColor,
 }: {
   elements: readonly ExcalidrawElement[];
   viewport: ViewportInfo | null;
+  backgroundColor: string;
 }) => {
   const W = 200;
   const H = 150;
@@ -216,7 +229,7 @@ const Minimap = ({
           y={PAD}
           width={CANVAS_BOUNDS.w * scale}
           height={CANVAS_BOUNDS.h * scale}
-          fill="#0e1116"
+          fill={backgroundColor}
           stroke="#3a4150"
           strokeWidth={1}
         />
@@ -279,13 +292,15 @@ const App = () => {
   const [editorHidden, setEditorHidden] = useState(false);
   const [source, setSource] = useState<string>(() => {
     try {
-      return localStorage.getItem(STORAGE_KEY) ?? DEFAULT_CODE;
+      const stored = localStorage.getItem(STORAGE_KEY);
+      return stored && stored.trim().length > 0 ? stored : DEFAULT_CODE;
     } catch {
       return DEFAULT_CODE;
     }
   });
   const [liveElements, setLiveElements] = useState<readonly ExcalidrawElement[]>([]);
   const [viewport, setViewport] = useState<ViewportInfo | null>(null);
+  const [canvasBg, setCanvasBg] = useState<string>("#ffffff");
 
   // The DSL of the scene we most recently pushed to Excalidraw. Any incoming
   // onChange whose serialised form matches this value is just Excalidraw
@@ -294,6 +309,13 @@ const App = () => {
   const lastDslPushed = useRef<string>("");
   const lastLiveSignature = useRef<string>("");
   const lastViewportSig = useRef<string>("");
+  // Timestamp of the most recent code→canvas push. Excalidraw normalises
+  // elements (binding text labels, recalculating bounds, etc.) and fires one
+  // or more onChange callbacks whose serialised DSL differs from what we
+  // pushed. Treat any onChange within this window as a normalisation echo:
+  // refresh lastDslPushed but never write back to `source`.
+  const lastPushAt = useRef<number>(0);
+  const didInitialFit = useRef<boolean>(false);
 
   const [debouncedSource, flushSync] = useDebounced(source, 150);
 
@@ -331,13 +353,41 @@ const App = () => {
   // matter.
   useEffect(() => {
     if (!api) return;
-    try {
-      const elements = buildScene(parsed);
-      lastDslPushed.current = serializeScene(elements);
-      api.updateScene({ elements });
-    } catch (err) {
-      console.error("[codedraw] buildScene failed", err);
+    let cancelled = false;
+    const push = () => {
+      if (cancelled) return;
+      try {
+        const elements = buildScene(parsed);
+        lastDslPushed.current = serializeScene(elements);
+        lastPushAt.current = Date.now();
+        api.updateScene({ elements });
+        if (!didInitialFit.current && elements.length > 0) {
+          didInitialFit.current = true;
+          requestAnimationFrame(() => {
+            try {
+              api.scrollToContent(elements, { fitToContent: true, animate: false });
+            } catch {
+              /* ignore */
+            }
+          });
+        }
+      } catch (err) {
+        console.error("[codedraw] buildScene failed", err);
+      }
+    };
+    // Defer the very first push by a frame so Excalidraw has finished
+    // mounting and won't overwrite our scene with `initialData` afterwards.
+    if (!didInitialFit.current) {
+      const raf = requestAnimationFrame(push);
+      return () => {
+        cancelled = true;
+        cancelAnimationFrame(raf);
+      };
     }
+    push();
+    return () => {
+      cancelled = true;
+    };
   }, [api, parsed]);
 
   // CANVAS → CODE
@@ -350,6 +400,7 @@ const App = () => {
         zoom: { value: number };
         width: number;
         height: number;
+        viewBackgroundColor?: string;
       },
     ) => {
       const liveSig = sceneSignature(elements);
@@ -368,16 +419,25 @@ const App = () => {
           height: appState.height,
         });
       }
+      if (appState.viewBackgroundColor && appState.viewBackgroundColor !== canvasBg) {
+        setCanvasBg(appState.viewBackgroundColor);
+      }
 
       const dsl = serializeScene(elements);
-      // If this is just Excalidraw echoing the scene we pushed (or otherwise
-      // the same content we already have), do not touch the source.
+      // Echo window after a code→canvas push: Excalidraw runs normalisation
+      // passes that mutate `boundElements`, recompute sizes, etc. and fires
+      // onChange with a slightly different serialised form. Refresh our
+      // baseline but never write back to source during this window.
+      if (Date.now() - lastPushAt.current < 400) {
+        lastDslPushed.current = dsl;
+        return;
+      }
       if (dsl === lastDslPushed.current) return;
       if (dsl === source) return;
       lastDslPushed.current = dsl;
       setSource(dsl);
     },
-    [source],
+    [source, canvasBg],
   );
 
   const { width, onMouseDown } = useResizableSplit();
@@ -450,7 +510,7 @@ const App = () => {
         {!editorHidden && <div className="cd-divider" onMouseDown={onMouseDown} />}
         <div className="cd-canvas">
           <Excalidraw
-            excalidrawAPI={setApi}
+            onExcalidrawAPI={(a) => { setApi(a); (window as any).__excalidrawAPI = a; }}
             initialData={{ appState: { viewBackgroundColor: "#ffffff" } }}
             onChange={onCanvasChange}
             UIOptions={{
@@ -474,7 +534,7 @@ const App = () => {
               <WelcomeScreen.Hints.HelpHint />
             </WelcomeScreen>
           </Excalidraw>
-          <Minimap elements={liveElements} viewport={viewport} />
+          <Minimap elements={liveElements} viewport={viewport} backgroundColor={canvasBg} />
         </div>
       </div>
     </div>

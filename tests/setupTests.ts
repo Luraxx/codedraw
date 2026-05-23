@@ -1,17 +1,18 @@
 import fs from "fs";
+import path from "path";
 
 // vitest.setup.ts
 import "vitest-canvas-mock";
 import "@testing-library/jest-dom";
 import { vi } from "vitest";
 
-import polyfill from "./packages/excalidraw/polyfill";
-import { mockThrottleRAF } from "./packages/excalidraw/tests/helpers/mocks";
-import { yellow } from "./packages/excalidraw/tests/helpers/colorize";
+import polyfill from "../packages/excalidraw/polyfill";
+import { mockThrottleRAF } from "../packages/excalidraw/tests/helpers/mocks";
+import { yellow } from "../packages/excalidraw/tests/helpers/colorize";
 import {
   PolyfillLocalStorage,
   testPolyfills,
-} from "./packages/excalidraw/tests/helpers/polyfills";
+} from "../packages/excalidraw/tests/helpers/polyfills";
 
 Object.assign(globalThis, testPolyfills);
 PolyfillLocalStorage();
@@ -79,15 +80,16 @@ Object.defineProperty(document, "fonts", {
 });
 
 Object.defineProperty(window, "EXCALIDRAW_ASSET_PATH", {
-  value: `file://${__dirname}/`,
+  // Asset path is relative to the repo root, not this setup file.
+  value: `file://${path.resolve(__dirname, "..")}/`,
 });
 
 // mock the font fetch only, so that everything else, as font subsetting, can run inside of the (snapshot) tests
 vi.mock(
-  "./packages/excalidraw/fonts/ExcalidrawFontFace",
+  "../packages/excalidraw/fonts/ExcalidrawFontFace",
   async (importOriginal) => {
     const mod = await importOriginal<
-      typeof import("./packages/excalidraw/fonts/ExcalidrawFontFace")
+      typeof import("../packages/excalidraw/fonts/ExcalidrawFontFace")
     >();
     const ExcalidrawFontFaceImpl = mod.ExcalidrawFontFace;
 

@@ -4,9 +4,11 @@
  * Top-level statements:
  *
  *   node <id> { ... }              -> shape (rectangle by default)
- *   edge <id> -> <id> { ... }      -> arrow bound to nodes
- *   edge <id> -- <id> { ... }      -> line bound to nodes
+ *   edge <id> -> <id> { ... }      -> straight arrow bound to nodes
+ *   edge <id> ~> <id> { ... }      -> elbow (90°) arrow bound to nodes
+ *   edge <id> -- <id> { ... }      -> straight line bound to nodes
  *   arrow { from: x,y  to: x,y }   -> free arrow (no bindings)
+ *   elbow { from: x,y  to: x,y }   -> free elbow arrow
  *   line  { from: x,y  to: x,y }   -> free line  (no bindings)
  *   text  { content: "..." }       -> free text
  *
@@ -14,11 +16,23 @@
  *
  * Block bodies hold `key: value` lines:
  *
- *   node:   label, shape, fill, stroke, at, size
- *   edge:   label
- *   arrow:  from, to, label
- *   line:   from, to
- *   text:   content, at, size
+ *   node:   label, shape, fill, stroke, strokeWidth, strokeStyle,
+ *           roughness, at, size
+ *   edge:   label, color, width, style, startHead, endHead, roughness,
+ *           fromSide, toSide (elbow only: top|right|bottom|left)
+ *   arrow:  from, to, label, color, width, style, startHead, endHead, roughness
+ *   elbow:  from, to, label, color, width, style, startHead, endHead, roughness
+ *   line:   from, to, color, width, style, roughness
+ *   text:   content, at, size, color
+ *
+ * Style value vocabulary:
+ *   shape       rectangle | ellipse | diamond
+ *   strokeStyle solid | dashed | dotted
+ *   style       solid | dashed | dotted   (edges/arrows)
+ *   startHead   none | arrow | triangle | bar | dot
+ *   endHead     none | arrow | triangle | bar | dot
+ *   width       1 | 2 | 4                 (strokeWidth)
+ *   roughness   0 | 1 | 2                 (0 = architect / clean, 2 = sketchy)
  *
  * Values:
  *   "string"            quoted, with \" \\ \n escapes
@@ -32,6 +46,21 @@
  */
 
 export type NodeShape = "rectangle" | "ellipse" | "diamond";
+export type StrokeStyle = "solid" | "dashed" | "dotted";
+export type Arrowhead = "none" | "arrow" | "triangle" | "bar" | "dot";
+
+const VALID_STROKE_STYLES: ReadonlySet<StrokeStyle> = new Set([
+  "solid",
+  "dashed",
+  "dotted",
+]);
+const VALID_ARROWHEADS: ReadonlySet<Arrowhead> = new Set([
+  "none",
+  "arrow",
+  "triangle",
+  "bar",
+  "dot",
+]);
 
 export interface ParsedNode {
   id: string;
@@ -39,22 +68,38 @@ export interface ParsedNode {
   shape: NodeShape;
   backgroundColor?: string;
   strokeColor?: string;
+  strokeWidth?: number;
+  strokeStyle?: StrokeStyle;
+  roughness?: number;
   x?: number;
   y?: number;
   width?: number;
   height?: number;
 }
 
-export type EdgeKind = "arrow" | "line";
+export type EdgeKind = "arrow" | "line" | "elbow";
 
-export interface ParsedEdge {
+export interface ParsedLinearStyle {
+  strokeColor?: string;
+  strokeWidth?: number;
+  strokeStyle?: StrokeStyle;
+  startArrowhead?: Arrowhead;
+  endArrowhead?: Arrowhead;
+  roughness?: number;
+}
+
+export type EdgeSide = "top" | "right" | "bottom" | "left";
+
+export interface ParsedEdge extends ParsedLinearStyle {
   from: string;
   to: string;
   label?: string;
   kind: EdgeKind;
+  fromSide?: EdgeSide;
+  toSide?: EdgeSide;
 }
 
-export interface ParsedFreeArrow {
+export interface ParsedFreeArrow extends ParsedLinearStyle {
   kind: EdgeKind;
   fromX: number;
   fromY: number;
@@ -90,9 +135,9 @@ const ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const NODE_HEAD =
   /^node\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
 const EDGE_HEAD =
-  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(->|--)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
+  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(~>|->|--)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
 const SIMPLE_HEAD =
-  /^(arrow|line|text)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
+  /^(elbow|arrow|line|text)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
 const KV_RE = /^([A-Za-z_]+)\s*:\s*(.*)$/;
 
 const VALID_SHAPES: ReadonlySet<NodeShape> = new Set([
@@ -199,7 +244,7 @@ const splitInlineKvs = (body: string): string[] => {
   for (let k = 0; k < starts.length; k++) {
     const s = starts[k];
     const e = k + 1 < starts.length ? starts[k + 1] : body.length;
-    out.push(body.slice(s, e).trim());
+    out.push(body.slice(s, e).replace(/,\s*$/, "").trim());
   }
   return out;
 };
@@ -289,6 +334,24 @@ const fillNode = (node: ParsedNode, body: BlockBody, result: ParseResult) => {
       case "stroke":
         if (v.kind === "color") node.strokeColor = v.value;
         break;
+      case "strokeWidth":
+        if (v.kind === "numbers" && v.value.length === 1) {
+          node.strokeWidth = v.value[0];
+        }
+        break;
+      case "strokeStyle":
+        if (
+          v.kind === "ident" &&
+          VALID_STROKE_STYLES.has(v.value as StrokeStyle)
+        ) {
+          node.strokeStyle = v.value as StrokeStyle;
+        }
+        break;
+      case "roughness":
+        if (v.kind === "numbers" && v.value.length === 1) {
+          node.roughness = v.value[0];
+        }
+        break;
       case "at":
         if (v.kind === "numbers" && v.value.length === 2) {
           node.x = v.value[0];
@@ -306,9 +369,64 @@ const fillNode = (node: ParsedNode, body: BlockBody, result: ParseResult) => {
   for (const e of body.errors) result.errors.push(e);
 };
 
+const applyLinearStyle = (target: ParsedLinearStyle, body: BlockBody) => {
+  for (const [k, v] of body.entries) {
+    switch (k) {
+      case "color":
+        if (v.kind === "color") target.strokeColor = v.value;
+        break;
+      case "width":
+        if (v.kind === "numbers" && v.value.length === 1) {
+          target.strokeWidth = v.value[0];
+        }
+        break;
+      case "style":
+        if (
+          v.kind === "ident" &&
+          VALID_STROKE_STYLES.has(v.value as StrokeStyle)
+        ) {
+          target.strokeStyle = v.value as StrokeStyle;
+        }
+        break;
+      case "startHead":
+        if (
+          v.kind === "ident" &&
+          VALID_ARROWHEADS.has(v.value as Arrowhead)
+        ) {
+          target.startArrowhead = v.value as Arrowhead;
+        }
+        break;
+      case "endHead":
+        if (
+          v.kind === "ident" &&
+          VALID_ARROWHEADS.has(v.value as Arrowhead)
+        ) {
+          target.endArrowhead = v.value as Arrowhead;
+        }
+        break;
+      case "roughness":
+        if (v.kind === "numbers" && v.value.length === 1) {
+          target.roughness = v.value[0];
+        }
+        break;
+    }
+  }
+};
+
+const VALID_SIDES = new Set<EdgeSide>(["top", "right", "bottom", "left"]);
+
 const fillEdge = (edge: ParsedEdge, body: BlockBody, result: ParseResult) => {
   const lbl = body.entries.get("label");
   if (lbl && lbl.kind === "string") edge.label = lbl.value;
+  const fs = body.entries.get("fromSide");
+  if (fs && fs.kind === "ident" && VALID_SIDES.has(fs.value as EdgeSide)) {
+    edge.fromSide = fs.value as EdgeSide;
+  }
+  const ts = body.entries.get("toSide");
+  if (ts && ts.kind === "ident" && VALID_SIDES.has(ts.value as EdgeSide)) {
+    edge.toSide = ts.value as EdgeSide;
+  }
+  applyLinearStyle(edge, body);
   for (const e of body.errors) result.errors.push(e);
 };
 
@@ -333,14 +451,16 @@ const fillFreeArrow = (
     return;
   }
   const lbl = body.entries.get("label");
-  result.freeArrows.push({
+  const fa: ParsedFreeArrow = {
     kind,
     fromX: from.value[0],
     fromY: from.value[1],
     toX: to.value[0],
     toY: to.value[1],
     label: lbl && lbl.kind === "string" ? lbl.value : undefined,
-  });
+  };
+  applyLinearStyle(fa, body);
+  result.freeArrows.push(fa);
   for (const e of body.errors) result.errors.push(e);
 };
 
@@ -426,7 +546,7 @@ export const parseDsl = (source: string): ParseResult => {
       const edge: ParsedEdge = {
         from,
         to,
-        kind: op === "--" ? "line" : "arrow",
+        kind: op === "--" ? "line" : op === "~>" ? "elbow" : "arrow",
       };
       const lineNo = i + 1;
       i++;
@@ -462,6 +582,7 @@ export const parseDsl = (source: string): ParseResult => {
         continue;
       }
       if (kw === "arrow") fillFreeArrow("arrow", body, result, lineNo);
+      else if (kw === "elbow") fillFreeArrow("elbow", body, result, lineNo);
       else if (kw === "line") fillFreeArrow("line", body, result, lineNo);
       else fillText(body, result, lineNo);
       continue;

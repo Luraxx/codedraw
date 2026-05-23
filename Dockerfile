@@ -23,6 +23,9 @@ RUN yarn install --frozen-lockfile --network-timeout 600000
 COPY scripts ./scripts
 COPY packages ./packages
 COPY codedraw-app ./codedraw-app
+# Repo-root docs the build pipeline embeds into the deployed app
+# (served as /AGENTS.md and /llms.txt for AI/agent discoverability).
+COPY AGENTS.md ./
 
 RUN yarn build
 

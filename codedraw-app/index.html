@@ -5,10 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#121212" />
+    <!-- AI / agent discoverability: the DSL grammar reference is served at
+         /AGENTS.md (and /llms.txt) by the vite build. -->
+    <link rel="help" type="text/markdown" href="/AGENTS.md" title="CodeDraw DSL reference" />
     <title>CodeDraw — Code zu Diagramm</title>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Tell Excalidraw to load font assets from the local dev origin,
+      // not from esm.sh (which 404s for our `@fs/...` Vite paths).
+      window.EXCALIDRAW_ASSET_PATH = "/";
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

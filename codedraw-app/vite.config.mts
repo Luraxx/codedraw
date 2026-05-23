@@ -1,8 +1,40 @@
+import fs from "fs";
 import path from "path";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import svgrPlugin from "vite-plugin-svgr";
 import { woff2BrowserPlugin } from "../scripts/woff2/woff2-vite-plugins";
+
+// Expose the repo-root AGENTS.md to the deployed app so AI agents can
+// discover the DSL grammar at runtime via `/AGENTS.md` and `/llms.txt`
+// (the emerging convention for LLM-readable site docs).
+// Strategy: at config load time we copy AGENTS.md into ./public so vite's
+// built-in static-file middleware (dev + build) serves both URLs without
+// any custom request handling.
+const syncAgentsDocs = (): Plugin => {
+  const src = path.resolve(__dirname, "../AGENTS.md");
+  const publicDir = path.resolve(__dirname, "public");
+  const sync = () => {
+    if (!fs.existsSync(src)) return;
+    const body = fs.readFileSync(src, "utf-8");
+    fs.mkdirSync(publicDir, { recursive: true });
+    fs.writeFileSync(path.join(publicDir, "AGENTS.md"), body);
+    fs.writeFileSync(path.join(publicDir, "llms.txt"), body);
+  };
+  sync();
+  return {
+    name: "codedraw:agents-docs",
+    configureServer(server) {
+      server.watcher.add(src);
+      server.watcher.on("change", (file) => {
+        if (path.resolve(file) === src) sync();
+      });
+    },
+    buildStart() {
+      sync();
+    },
+  };
+};
 
 export default defineConfig(({ mode }) => {
   const envVars = loadEnv(mode, `../`);
@@ -49,6 +81,6 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-    plugins: [woff2BrowserPlugin(), react(), svgrPlugin()],
+    plugins: [woff2BrowserPlugin(), react(), svgrPlugin(), syncAgentsDocs()],
   };
 });

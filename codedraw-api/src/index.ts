@@ -158,6 +158,13 @@ app.get("/", async () => ({
   },
   formats: ["png", "svg", "json"],
   shapes: ["rectangle", "ellipse", "diamond"],
+  options: {
+    format:     "'svg' | 'png' | 'json' (default 'png')",
+    scale:      "PNG export scale 0.25–5 (default 1)",
+    padding:    "padding in px around content (default 20)",
+    background: "any CSS color (e.g. '#ffffff', '#00000000', 'red') or 'transparent'. Default '#ffffff'. Applies to both PNG and SVG — transparent yields no background rect.",
+    theme:      "'light' | 'dark' (default 'light')",
+  },
 }));
 
 app.post<{ Body: RenderBody }>("/render", async (req, reply) => {
