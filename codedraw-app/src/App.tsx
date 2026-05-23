@@ -287,9 +287,11 @@ const App = () => {
   const [liveElements, setLiveElements] = useState<readonly ExcalidrawElement[]>([]);
   const [viewport, setViewport] = useState<ViewportInfo | null>(null);
 
-  const canvasFrozenUntil = useRef(0);
-  const lastAppliedSignature = useRef<string>("");
-  const lastSerializedFromCanvas = useRef<string>("");
+  // The DSL of the scene we most recently pushed to Excalidraw. Any incoming
+  // onChange whose serialised form matches this value is just Excalidraw
+  // echoing our own update back and must be ignored — otherwise the user's
+  // hand-written source gets clobbered by the round-tripped serialisation.
+  const lastDslPushed = useRef<string>("");
   const lastLiveSignature = useRef<string>("");
   const lastViewportSig = useRef<string>("");
 
@@ -324,19 +326,15 @@ const App = () => {
   const parsed = useMemo(() => parseDsl(debouncedSource), [debouncedSource]);
 
   // CODE → CANVAS
-  // Only depends on `parsed`. The canvas→code loop is broken by the
-  // `canvasFrozenUntil` window plus the sig/dsl dedupe in onCanvasChange.
+  // Only depends on `parsed`. The canvas→code path uses DSL-based dedup
+  // (lastDslPushed) so timing of Excalidraw's onChange callbacks doesn't
+  // matter.
   useEffect(() => {
     if (!api) return;
     try {
       const elements = buildScene(parsed);
-      canvasFrozenUntil.current = Date.now() + 250;
+      lastDslPushed.current = serializeScene(elements);
       api.updateScene({ elements });
-      // updateScene fires onChange synchronously; lastLiveSignature now
-      // reflects the version numbers Excalidraw assigned to the new elements,
-      // which is what subsequent onChange calls will report.
-      lastAppliedSignature.current = lastLiveSignature.current;
-      lastSerializedFromCanvas.current = serializeScene(elements);
     } catch (err) {
       console.error("[codedraw] buildScene failed", err);
     }
@@ -371,15 +369,12 @@ const App = () => {
         });
       }
 
-      if (Date.now() < canvasFrozenUntil.current) return;
-      if (liveSig === lastAppliedSignature.current) return;
-      lastAppliedSignature.current = liveSig;
-
       const dsl = serializeScene(elements);
-      if (dsl === lastSerializedFromCanvas.current) return;
-      lastSerializedFromCanvas.current = dsl;
+      // If this is just Excalidraw echoing the scene we pushed (or otherwise
+      // the same content we already have), do not touch the source.
+      if (dsl === lastDslPushed.current) return;
       if (dsl === source) return;
-
+      lastDslPushed.current = dsl;
       setSource(dsl);
     },
     [source],
