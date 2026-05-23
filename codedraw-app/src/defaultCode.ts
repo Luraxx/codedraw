@@ -78,7 +78,7 @@ edge check -> work  { label: "yes" }
 edge check -> error { label: "no", color: #c92a2a, style: dashed }
 edge work  -> done
 edge error -> input { label: "retry", style: dotted }
-edge done  ~> start { label: "again", color: #1971c2, width: 2 }
+edge done  ~> start { label: "again", color: #1971c2, width: 2, fromSide: right, toSide: right }
 
 # ──────────────────────────────────────────────────────────
 # Text
