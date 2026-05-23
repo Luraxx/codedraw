@@ -4,7 +4,7 @@
 > with collaboration, Firebase, marketing and the library browser stripped
 > out, plus a live code↔diagram editor and a headless HTTP render API.
 
-Live: <https://codedraw.dehlwes.net> · API: <https://codedraw-api.dehlwes.net>
+Live: <https://codedraw.dehlwes.net> · API: <https://codedraw.dehlwes.net/api/>
 
 <table><tr><td width="55%">
 
@@ -130,13 +130,13 @@ browser export.
 
 | Method | Path        | Description                                                |
 |--------|-------------|------------------------------------------------------------|
-| `GET`  | `/`         | Service index — endpoints, supported formats/shapes.       |
-| `GET`  | `/health`   | Liveness; reports browser/page state.                      |
-| `GET`  | `/grammar`  | Plain-text DSL grammar reference (self-describing).        |
-| `GET`  | `/example`  | Plain-text working DSL sample.                             |
-| `POST` | `/render`   | DSL code → PNG / SVG / JSON.                               |
+| `GET`  | `/api/`         | Service index — endpoints, supported formats/shapes.   |
+| `GET`  | `/api/health`   | Liveness; reports browser/page state.                  |
+| `GET`  | `/api/grammar`  | Plain-text DSL grammar reference (self-describing).    |
+| `GET`  | `/api/example`  | Plain-text working DSL sample.                         |
+| `POST` | `/api/render`   | DSL code → PNG / SVG / JSON.                           |
 
-`POST /render` body (JSON):
+`POST /api/render` body (JSON):
 
 ```jsonc
 {
@@ -167,17 +167,17 @@ must then send `Authorization: Bearer <key>`. Unset = open endpoint.
 
 ```bash
 # Inspect grammar / fetch a sample
-curl https://codedraw-api.dehlwes.net/grammar
-curl https://codedraw-api.dehlwes.net/example
+curl https://codedraw.dehlwes.net/api/grammar
+curl https://codedraw.dehlwes.net/api/example
 
 # PNG to file
-curl -X POST https://codedraw-api.dehlwes.net/render \
+curl -X POST https://codedraw.dehlwes.net/api/render \
   -H "content-type: application/json" \
   -d '{"code":"node a { label: \"Start\" shape: ellipse }\nnode b { label: \"End\" }\nedge a -> b","format":"png","scale":2}' \
   --output diagram.png
 
 # With auth
-curl -X POST https://codedraw-api.dehlwes.net/render \
+curl -X POST https://codedraw.dehlwes.net/api/render \
   -H "authorization: Bearer $CODEDRAW_API_KEY" \
   -H "content-type: application/json" \
   -d '{"code":"edge a -> b","format":"png"}' --output d.png
@@ -188,18 +188,28 @@ curl -X POST https://codedraw-api.dehlwes.net/render \
 The API is intentionally self-describing — an agent only needs the base
 URL (and optional bearer token):
 
-1. `GET /grammar` — full DSL spec as plain text (drop into the system prompt).
-2. `GET /example` — runnable sample, useful as a few-shot anchor.
+1. `GET /api/grammar` — full DSL spec as plain text (drop into the system prompt).
+2. `GET /api/example` — runnable sample, useful as a few-shot anchor.
 3. Generate DSL `code`.
-4. `POST /render` with `{ code, format }` and save the response.
+4. `POST /api/render` with `{ code, format }` and save the response.
 
 Pseudo-loop:
 
 ```text
-spec = GET  /grammar
-sample = GET /example
-code = LLM.generate(prompt, spec, sample)
-png  = POST /render  { code, format: "png", scale: 2 }
+spec   = GET  https://codedraw.dehlwes.net/api/grammar
+sample = GET  https://codedraw.dehlwes.net/api/example
+code   = LLM.generate(prompt, spec, sample)
+png    = POST https://codedraw.dehlwes.net/api/render  { code, format: "png", scale: 2 }
+write "diagram.png", png
+```
+
+Pseudo-loop:
+
+```text
+spec   = GET  https://codedraw.dehlwes.net/api/grammar
+sample = GET  https://codedraw.dehlwes.net/api/example
+code   = LLM.generate(prompt, spec, sample)
+png    = POST https://codedraw.dehlwes.net/api/render  { code, format: "png", scale: 2 }
 write "diagram.png", png
 ```
 
