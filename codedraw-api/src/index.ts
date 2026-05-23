@@ -80,6 +80,86 @@ app.get("/health", async () => ({
   web: WEB_URL,
 }));
 
+const GRAMMAR_TEXT = `CodeDraw DSL — block-structured.
+
+Top-level statements (each may be followed by an optional { ... } block):
+
+  node <id> { label, shape, fill, stroke, at, size }
+  edge <id> -> <id> { label }       arrow bound to two nodes
+  edge <id> -- <id> { label }       line  bound to two nodes
+  arrow { from: x,y  to: x,y  label }   free arrow, not bound to nodes
+  line  { from: x,y  to: x,y }          free line,  not bound to nodes
+  text  { content: "...", at: x,y, size: fontSize }
+
+Attribute values:
+  "string"          quoted, supports \\" \\\\ \\n escapes
+  ident             bare identifier (e.g. ellipse)
+  #rgb / #rrggbb    color
+  n[, n[, n[, n]]]  one to four numbers separated by commas
+
+Per statement:
+  node:   label "string"; shape rectangle|ellipse|diamond (default rectangle);
+          fill #hex; stroke #hex; at x,y; size w,h
+  edge:   label "string"
+  arrow:  from x,y; to x,y; label "string"
+  line:   from x,y; to x,y
+  text:   content "string"; at x,y; size fontSize
+
+Identifiers match [A-Za-z_][A-Za-z0-9_]*.
+Comments: lines beginning with '#' or trailing '  # ...'.
+Implicit nodes: an edge that names an undeclared id auto-creates a
+default rectangle node with that id as label.
+If no node has an explicit 'at:' position, dagre lays out the graph
+top-down. Otherwise positions from the code are honored verbatim.
+`;
+
+const EXAMPLE_CODE = `node start {
+  label: "Start"
+  shape: ellipse
+  fill:  #b2f2bb
+}
+
+node check {
+  label: "Valid?"
+  shape: diamond
+  fill:  #fff3bf
+}
+
+node work  { label: "Process"    fill: #a5d8ff }
+node error { label: "Show error" fill: #ffc9c9 }
+node done  { label: "End" shape: ellipse fill: #b2f2bb }
+
+edge start -> check
+edge check -> work  { label: "yes" }
+edge check -> error { label: "no" }
+edge work  -> done
+edge error -> start { label: "retry" }
+
+text { content: "code in, diagram out" }
+`;
+
+app.get("/grammar", async (_req, reply) => {
+  reply.header("content-type", "text/plain; charset=utf-8");
+  return GRAMMAR_TEXT;
+});
+
+app.get("/example", async (_req, reply) => {
+  reply.header("content-type", "text/plain; charset=utf-8");
+  return EXAMPLE_CODE;
+});
+
+app.get("/", async () => ({
+  name: "codedraw-api",
+  endpoints: {
+    "GET /health":   "liveness + browser/page state",
+    "GET /grammar":  "plain-text grammar reference",
+    "GET /example":  "plain-text working DSL sample",
+    "POST /render":  "{ code, format?, scale?, padding?, background?, theme? } -> png | svg | json",
+  },
+  formats: ["png", "svg", "json"],
+  shapes: ["rectangle", "ellipse", "diamond"],
+}));
+
 app.post<{ Body: RenderBody }>("/render", async (req, reply) => {
   const { code, format = "png", scale, padding, background, theme } = req.body ?? {};
   if (typeof code !== "string" || code.length === 0) {

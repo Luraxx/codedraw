@@ -105,16 +105,20 @@ the output is pixel-identical to a browser export.
 
 ### Endpoints
 
-| Method | Path       | Description                              |
-|--------|------------|------------------------------------------|
-| `GET`  | `/health`  | Liveness; reports browser/page state.    |
-| `POST` | `/render`  | DSL code → image.                        |
+| Method | Path        | Description                                                |
+|--------|-------------|------------------------------------------------------------|
+| `GET`  | `/`         | Service index — lists endpoints, supported formats/shapes. |
+| `GET`  | `/health`   | Liveness; reports browser/page state.                      |
+| `GET`  | `/grammar`  | Plain-text DSL grammar reference (self-describing).        |
+| `GET`  | `/example`  | Plain-text working DSL sample.                             |
+| `POST` | `/render`   | DSL code → PNG / SVG / JSON.                               |
 
 `POST /render` body (JSON):
 
 ```jsonc
 {
-  "code": "a [Start] (ellipse)\nb [End]\na -> b : go",
+  // DSL source — see GET /grammar for the full reference
+  "code": "node a { label: \"Start\" shape: ellipse }\nnode b { label: \"End\" }\nedge a -> b { label: \"go\" }",
   "format": "png",          // "png" | "svg" | "json"  (default: "png")
   "scale": 2,                // PNG only, 0.25 – 5  (default: 1)
   "padding": 20,             // export padding in px (default: 20)
@@ -140,23 +144,54 @@ endpoint is open.
 ### Examples
 
 ```bash
+# Inspect the grammar and a sample (great for LLMs / scripting)
+curl http://server:8081/grammar
+curl http://server:8081/example
+
 # PNG to file
 curl -X POST http://server:8081/render \
   -H "content-type: application/json" \
-  -d '{"code":"a [Start] (ellipse)\nb [End]\na -> b","format":"png","scale":2}' \
+  -d '{"code":"node a { label: \"Start\" shape: ellipse }\nnode b { label: \"End\" }\nedge a -> b","format":"png","scale":2}' \
   --output diagram.png
 
-# SVG to stdout
+# SVG to stdout from the canned example
 curl -X POST http://server:8081/render \
   -H "content-type: application/json" \
-  -d '{"code":"a -> b -> c","format":"svg"}' > diagram.svg
+  --data "$(jq -Rs '{code:., format:\"svg\"}' < <(curl -s http://server:8081/example))" > diagram.svg
 
 # with auth
 curl -X POST http://server:8081/render \
   -H "authorization: Bearer secret" \
   -H "content-type: application/json" \
-  -d '{"code":"a -> b","format":"png"}' --output d.png
+  -d '{"code":"edge a -> b","format":"png"}' --output d.png
 ```
+
+### Using CodeDraw from an LLM / agent
+
+The API is intentionally self-describing so an AI agent only needs the
+base URL (and optional bearer token) to produce diagrams:
+
+1. `GET /grammar` — the complete DSL spec as plain text. Drop it into the
+   system prompt or fetch on demand.
+2. `GET /example` — a runnable starter snippet. Useful as a few-shot
+   anchor.
+3. Generate DSL `code` matching the grammar.
+4. `POST /render` with `{ "code": "...", "format": "svg" | "png" }` and
+   save the binary response.
+
+Minimal pseudo-loop:
+
+```text
+spec  = GET  /grammar
+start = GET  /example
+code  = LLM.generate(prompt, spec, start)
+png   = POST /render  { code, format: "png", scale: 2 }
+write "diagram.png" png
+```
+
+Parser warnings are returned in the `x-codedraw-errors` response header
+(JSON array of `{ line, message, raw }`). An agent should re-prompt the
+model with those errors if non-empty.
 
 ### Configuration (API)
 
@@ -191,6 +226,53 @@ Exposed ports: `8080` = web UI, `8081` = API. Put a reverse proxy with TLS
 
 - `codedraw.example.com`      → `http://localhost:8080`
 - `codedraw-api.example.com`  → `http://localhost:8081`
+
+### Hetzner quickstart (Cloud / Cloud VM)
+
+On a fresh Ubuntu 22.04+ CX22/CX32 (≥ 2 GB RAM recommended — Chromium is
+hungry):
+
+```bash
+# 1. Install Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER && newgrp docker
+
+# 2. Pull the compose file and edit OWNER + (optional) API key
+mkdir -p /opt/codedraw && cd /opt/codedraw
+curl -O https://raw.githubusercontent.com/<owner>/codedraw/main/docker-compose.yml
+sed -i 's/OWNER/<your-github-user>/g' docker-compose.yml
+# optionally: echo 'CODEDRAW_API_KEY=changeme' >> .env  (compose reads .env automatically)
+
+# 3. (private images only) log in to GHCR
+echo $GHCR_TOKEN | docker login ghcr.io -u <user> --password-stdin
+
+# 4. Start
+docker compose pull
+docker compose up -d
+docker compose logs -f api    # wait for "Listening at http://0.0.0.0:3000"
+
+# 5. Smoke test
+curl http://localhost:8081/health
+curl http://localhost:8081/example | \
+  jq -Rs '{code:., format:"png", scale:2}' | \
+  curl -X POST http://localhost:8081/render \
+       -H 'content-type: application/json' \
+       --data-binary @- --output /tmp/d.png
+```
+
+For TLS, point a Hetzner DNS A-record at the VM and put Caddy in front:
+
+```caddyfile
+codedraw.example.com {
+  reverse_proxy localhost:8080
+}
+codedraw-api.example.com {
+  reverse_proxy localhost:8081
+}
+```
+
+Hetzner firewall: open 80/443 inbound to the VM. The 8080/8081 ports do
+not need to be exposed publicly when Caddy is in place.
 
 ## License & credits
 
