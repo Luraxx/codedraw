@@ -85,10 +85,14 @@ export interface ParseResult {
 }
 
 const ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const NODE_HEAD = /^node\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\{)?\s*$/;
+// Headers may be followed by either an inline `{ k: v k: v }` block (entire
+// block on the header line) or an opening `{` that starts a multi-line block.
+const NODE_HEAD =
+  /^node\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
 const EDGE_HEAD =
-  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(->|--)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\{)?\s*$/;
-const SIMPLE_HEAD = /^(arrow|line|text)\s*(\{)?\s*$/;
+  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(->|--)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
+const SIMPLE_HEAD =
+  /^(arrow|line|text)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
 const KV_RE = /^([A-Za-z_]+)\s*:\s*(.*)$/;
 
 const VALID_SHAPES: ReadonlySet<NodeShape> = new Set([
@@ -158,6 +162,74 @@ interface BlockBody {
   entries: Map<string, Value>;
   errors: { line: number; message: string; raw: string }[];
 }
+
+/**
+ * Split the body of an inline `{ ... }` block (without the surrounding
+ * braces) into individual `key: value` substrings.
+ *
+ * Recognizes string-quote boundaries so a `"key: …"` inside a value does
+ * not start a new entry.
+ */
+const splitInlineKvs = (body: string): string[] => {
+  const starts: number[] = [];
+  let i = 0;
+  while (i < body.length) {
+    const c = body[i];
+    if (c === '"') {
+      i++;
+      while (i < body.length && body[i] !== '"') {
+        if (body[i] === "\\" && i + 1 < body.length) i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c) && (i === 0 || /\s|[,{]/.test(body[i - 1]))) {
+      const m = /^([A-Za-z_]+)\s*:/.exec(body.slice(i));
+      if (m) {
+        starts.push(i);
+        i += m[0].length;
+        continue;
+      }
+    }
+    i++;
+  }
+  if (starts.length === 0) return [];
+  const out: string[] = [];
+  for (let k = 0; k < starts.length; k++) {
+    const s = starts[k];
+    const e = k + 1 < starts.length ? starts[k + 1] : body.length;
+    out.push(body.slice(s, e).trim());
+  }
+  return out;
+};
+
+const parseInlineBlock = (body: string, lineNo: number): BlockBody => {
+  const result: BlockBody = { entries: new Map(), errors: [] };
+  for (const kv of splitInlineKvs(body)) {
+    const m = KV_RE.exec(kv);
+    if (!m) {
+      result.errors.push({
+        line: lineNo,
+        raw: kv,
+        message: `Expected "key: value" inside inline block, got "${kv}".`,
+      });
+      continue;
+    }
+    const [, key, rest] = m;
+    const v = parseValue(rest);
+    if (!v) {
+      result.errors.push({
+        line: lineNo,
+        raw: kv,
+        message: `Invalid value for "${key}": ${rest}`,
+      });
+      continue;
+    }
+    result.entries.set(key, v);
+  }
+  return result;
+};
 
 const parseBlock = (
   lines: string[],
@@ -318,7 +390,7 @@ export const parseDsl = (source: string): ParseResult => {
 
     const nodeM = NODE_HEAD.exec(line);
     if (nodeM) {
-      const [, id, brace] = nodeM;
+      const [, id, inline, brace] = nodeM;
       if (!ID_RE.test(id)) {
         result.errors.push({ line: i + 1, raw, message: `Invalid id "${id}".` });
         i++;
@@ -335,8 +407,11 @@ export const parseDsl = (source: string): ParseResult => {
       }
       seenIds.set(id, i + 1);
       const node: ParsedNode = { id, label: id, shape: "rectangle" };
+      const lineNo = i + 1;
       i++;
-      if (brace) {
+      if (inline !== undefined) {
+        fillNode(node, parseInlineBlock(inline, lineNo), result);
+      } else if (brace) {
         const { body, nextIdx } = parseBlock(rawLines, i);
         fillNode(node, body, result);
         i = nextIdx;
@@ -347,14 +422,17 @@ export const parseDsl = (source: string): ParseResult => {
 
     const edgeM = EDGE_HEAD.exec(line);
     if (edgeM) {
-      const [, from, op, to, brace] = edgeM;
+      const [, from, op, to, inline, brace] = edgeM;
       const edge: ParsedEdge = {
         from,
         to,
         kind: op === "--" ? "line" : "arrow",
       };
+      const lineNo = i + 1;
       i++;
-      if (brace) {
+      if (inline !== undefined) {
+        fillEdge(edge, parseInlineBlock(inline, lineNo), result);
+      } else if (brace) {
         const { body, nextIdx } = parseBlock(rawLines, i);
         fillEdge(edge, body, result);
         i = nextIdx;
@@ -365,10 +443,17 @@ export const parseDsl = (source: string): ParseResult => {
 
     const simpleM = SIMPLE_HEAD.exec(line);
     if (simpleM) {
-      const [, kw, brace] = simpleM;
+      const [, kw, inline, brace] = simpleM;
+      const lineNo = i + 1;
       i++;
-      const lineNo = i;
-      if (!brace) {
+      let body: BlockBody | null = null;
+      if (inline !== undefined) {
+        body = parseInlineBlock(inline, lineNo);
+      } else if (brace) {
+        const parsedBlock = parseBlock(rawLines, i);
+        body = parsedBlock.body;
+        i = parsedBlock.nextIdx;
+      } else {
         result.errors.push({
           line: lineNo,
           raw,
@@ -376,8 +461,6 @@ export const parseDsl = (source: string): ParseResult => {
         });
         continue;
       }
-      const { body, nextIdx } = parseBlock(rawLines, i);
-      i = nextIdx;
       if (kw === "arrow") fillFreeArrow("arrow", body, result, lineNo);
       else if (kw === "line") fillFreeArrow("line", body, result, lineNo);
       else fillText(body, result, lineNo);

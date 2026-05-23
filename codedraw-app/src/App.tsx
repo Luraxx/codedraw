@@ -67,13 +67,21 @@ const registerCodedrawLanguage = (monaco: Monaco) => {
   } as any);
 };
 
-const useDebounced = <T,>(value: T, delay: number): T => {
+const useDebounced = <T,>(value: T, delay: number): [T, () => void] => {
   const [v, setV] = useState(value);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const t = setTimeout(() => setV(value), delay);
-    return () => clearTimeout(t);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setV(value), delay);
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
   }, [value, delay]);
-  return v;
+  const flush = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    setV(value);
+  }, [value]);
+  return [v, flush];
 };
 
 const useResizableSplit = () => {
@@ -130,7 +138,7 @@ const App = () => {
   const lastAppliedSignature = useRef<string>("");
   const lastSerializedFromCanvas = useRef<string>("");
 
-  const debouncedSource = useDebounced(source, 150);
+  const [debouncedSource, flushSync] = useDebounced(source, 150);
 
   useEffect(() => {
     try {
@@ -141,16 +149,22 @@ const App = () => {
   }, [source]);
 
   // Ctrl+B / Cmd+B → toggle the code panel.
+  // Shift+Enter   → force-sync code to canvas without waiting for the debounce.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
         e.preventDefault();
         setEditorHidden((h) => !h);
+        return;
+      }
+      if (e.shiftKey && e.key === "Enter") {
+        e.preventDefault();
+        flushSync();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [flushSync]);
 
   const parsed = useMemo(() => parseDsl(debouncedSource), [debouncedSource]);
 
@@ -206,6 +220,14 @@ const App = () => {
         <h1>CodeDraw</h1>
         <span style={{ opacity: 0.6 }}>code ⇄ diagram</span>
         <span className="cd-spacer" />
+        <button
+          type="button"
+          className="cd-btn"
+          onClick={flushSync}
+          title="Sync code → canvas now (Shift+Enter)"
+        >
+          Sync ⮐
+        </button>
         <button
           type="button"
           className="cd-btn"
