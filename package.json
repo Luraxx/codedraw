@@ -4,6 +4,7 @@
   "packageManager": "yarn@1.22.22",
   "workspaces": [
     "codedraw-app",
+    "codedraw-api",
     "packages/*"
   ],
   "devDependencies": {

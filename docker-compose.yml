@@ -1,8 +1,10 @@
 services:
-  codedraw:
-    image: ghcr.io/luisdehlwes/codedraw:latest
-    container_name: codedraw
+  web:
+    image: ghcr.io/luisdehlwes/codedraw-web:latest
+    container_name: codedraw-web
     restart: unless-stopped
+    expose:
+      - "80"
     ports:
       - "8080:80"
     healthcheck:
@@ -10,3 +12,26 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+
+  api:
+    image: ghcr.io/luisdehlwes/codedraw-api:latest
+    container_name: codedraw-api
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      CODEDRAW_WEB_URL: "http://web"
+      PORT: "3000"
+      # CODEDRAW_API_KEY: "set-me-via-env-file"
+      # CODEDRAW_MAX_CODE_BYTES: "65536"
+      # CODEDRAW_RENDER_TIMEOUT_MS: "15000"
+    ports:
+      - "8081:3000"
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
