@@ -6,24 +6,32 @@
 
 Live: <https://codedraw.dehlwes.net> · API: <https://codedraw-api.dehlwes.net>
 
+<table><tr><td>
+
 ```
 node start { label: "Start"      shape: ellipse  fill: #b2f2bb }
 node input { label: "Read input"                               }
 node check { label: "Valid?"     shape: diamond  fill: #fff3bf }
 node work  { label: "Process"                   fill: #a5d8ff }
-node error { label: "Show error"                fill: #ffc9c9  stroke: #c92a2a }
+node error { label: "Show error"                fill: #ffc9c9
+             stroke: #c92a2a                                   }
 node done  { label: "End"        shape: ellipse  fill: #b2f2bb }
 
 edge start -> input
 edge input -> check
 edge check -> work  { label: "yes" }
-edge check -> error { label: "no",    color: #c92a2a, style: dashed }
+edge check -> error { label: "no"    color: #c92a2a style: dashed }
 edge work  -> done
-edge error -> input { label: "retry", style: dotted }
-edge done  ~> start { label: "again", color: #1971c2, fromSide: right, toSide: right }
+edge error -> input { label: "retry" style: dotted }
+edge done  ~> start { label: "again" color: #1971c2
+                      fromSide: right toSide: right }
 ```
 
-![Example diagram generated from the DSL above](codedraw-app/public/image.png)
+</td><td>
+
+<img src="codedraw-app/public/image.png" width="340" alt="generated diagram"/>
+
+</td></tr></table>
 
 ## Features
 
