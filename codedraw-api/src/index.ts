@@ -1,6 +1,16 @@
 import Fastify from "fastify";
 import { chromium, type Browser, type Page } from "playwright";
 
+declare global {
+  interface Window {
+    codedraw?: {
+      renderSvg: (code: string, opts?: unknown) => Promise<{ svg: string; errors: unknown[] }>;
+      renderPng: (code: string, opts?: unknown) => Promise<{ base64: string; errors: unknown[] }>;
+      renderJson: (code: string) => Promise<unknown>;
+    };
+  }
+}
+
 const WEB_URL = process.env.CODEDRAW_WEB_URL ?? "http://web";
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "0.0.0.0";
