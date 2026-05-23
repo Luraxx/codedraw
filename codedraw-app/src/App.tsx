@@ -286,6 +286,7 @@ const App = () => {
             <MainMenu>
               <MainMenu.DefaultItems.ToggleTheme />
               <MainMenu.DefaultItems.ChangeCanvasBackground />
+              <MainMenu.DefaultItems.Preferences />
               <MainMenu.DefaultItems.ClearCanvas />
               <MainMenu.DefaultItems.Export />
               <MainMenu.DefaultItems.SaveAsImage />
