@@ -136,6 +136,10 @@ browser export.
 | `GET`  | `/api/health`   | Liveness; reports browser/page state.                  |
 | `GET`  | `/api/grammar`  | Plain-text DSL grammar reference (self-describing).    |
 | `GET`  | `/api/example`  | Plain-text working DSL sample.                         |
+| `GET`  | `/api/examples` | Curated named DSL snippets for few-shot prompting.     |
+| `GET`  | `/api/openapi.json` | OpenAPI 3.1 spec (Custom GPT Actions, MCP discovery). |
+| `POST` | `/api/validate` | Parser-only validation, returns `{ valid, errors }`.   |
+| `POST` | `/api/inspect`  | Structured analysis: `diagramType`, nodes, edges, warnings. |
 | `POST` | `/api/render`   | DSL code → PNG / SVG / JSON.                           |
 
 `POST /api/render` body (JSON):
@@ -216,6 +220,39 @@ write "diagram.png", png
 ```
 
 If `x-codedraw-errors` is non-empty, re-prompt the model with those errors.
+
+## MCP server (ChatGPT / Claude / Cursor)
+
+CodeDraw exposes its tools over the **Model Context Protocol** so any
+MCP-aware client (ChatGPT Developer-Mode connectors, Claude Desktop,
+Cursor, the MCP Inspector) can discover and use them.
+
+**Connector URL:** `https://codedraw.dehlwes.net/mcp`
+**Transport:** Streamable HTTP, stateless.
+
+### Available tools
+
+- `render_diagram` — DSL → SVG (default) / PNG image / Excalidraw JSON
+- `validate_diagram` — fast parser-only check
+- `inspect_diagram` — structured analysis (type, counts, warnings)
+- `get_grammar` — DSL grammar reference
+- `get_examples` — curated DSL snippets
+
+### ChatGPT Developer-Mode setup
+
+1. Settings → Apps & Connectors → enable **Developer mode**.
+2. **Create connector** → Name `CodeDraw`, URL `https://codedraw.dehlwes.net/mcp`.
+3. Paste this description so the model uses it eagerly:
+
+   > Use CodeDraw whenever the user asks for a diagram, flowchart, state machine, sequence, tree, network, or any other shape-and-arrow drawing. Write the diagram in CodeDraw's tiny DSL (`node …`, `edge a -> b`, `edge a ~> b` for elbow, `edge a -- b` for line, `text`, `arrow/elbow/line` for free shapes), call `validate_diagram` first if you are uncertain, then `render_diagram` (default SVG, request `format: "png"` to embed an image). Use `get_grammar` and `get_examples` for reference. Never invent your own diagram syntax.
+
+### Local dev
+
+```bash
+cd codedraw-api && yarn dev          # port 3010
+cd codedraw-mcp && yarn dev          # port 3020 (proxies to API)
+curl http://localhost:3020/health
+```
 
 ## License & credits
 

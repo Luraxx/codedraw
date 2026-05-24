@@ -11,6 +11,7 @@ declare global {
       renderPng: (code: string, opts?: unknown) => Promise<{ base64: string; errors: unknown[] }>;
       renderJson: (code: string) => Promise<unknown>;
       validateDsl: (code: string) => { valid: boolean; errors: { line: number; message: string }[] };
+      inspectDsl: (code: string) => unknown;
     };
   }
 }
@@ -236,6 +237,24 @@ app.post<{ Body: { code?: unknown } }>("/validate", async (req, reply) => {
   });
 });
 
+app.post<{ Body: { code?: unknown } }>("/inspect", async (req, reply) => {
+  const code = req.body?.code;
+  if (typeof code !== "string" || code.length === 0) {
+    return reply.code(400).send({ error: "missing 'code' string" });
+  }
+  if (Buffer.byteLength(code, "utf8") > MAX_CODE_BYTES) {
+    return reply.code(413).send({ error: "code too large" });
+  }
+  return runQueued(async () => {
+    const p = await getPage();
+    const result = await p.evaluate(
+      ([c]) => window.codedraw!.inspectDsl(c as string),
+      [code] as const,
+    );
+    return result;
+  });
+});
+
 app.get("/", async () => ({
   name: "codedraw-api",
   endpoints: {
@@ -245,6 +264,7 @@ app.get("/", async () => ({
     "GET /examples":      "JSON array of curated named snippets",
     "GET /openapi.json":  "OpenAPI 3.1 spec (import into Custom GPT Actions)",
     "POST /validate":     "{ code } -> { valid, errors } (parser-only, cheap)",
+    "POST /inspect":      "{ code } -> structured analysis (nodes, edges, type, warnings)",
     "POST /render":       "{ code, format?, scale?, padding?, background?, theme? } -> png | svg | json",
   },
   formats: ["png", "svg", "json"],

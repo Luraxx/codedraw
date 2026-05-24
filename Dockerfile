@@ -33,10 +33,11 @@ RUN yarn build
 # --- runtime stage ---
 FROM nginx:1.27-alpine AS runtime
 ENV API_UPSTREAM=codedraw-api:3000
+ENV MCP_UPSTREAM=codedraw-mcp:3000
 COPY nginx.conf /etc/nginx/nginx.conf.template
 COPY --from=builder /app/codedraw-app/dist /usr/share/nginx/html
 EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1
 CMD ["/bin/sh", "-c", \
-  "envsubst '$API_UPSTREAM' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+  "envsubst '$API_UPSTREAM $MCP_UPSTREAM' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]

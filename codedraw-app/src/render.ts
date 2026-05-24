@@ -70,6 +70,182 @@ export const validateDsl = (code: string): ValidateResult => {
   };
 };
 
+export interface InspectResult {
+  valid: boolean;
+  errors: { line: number; message: string }[];
+  warnings: string[];
+  diagramType:
+    | "flowchart"
+    | "sequence"
+    | "state-machine"
+    | "tree"
+    | "network"
+    | "free-form"
+    | "empty";
+  counts: {
+    nodes: number;
+    edges: number;
+    texts: number;
+    freeShapes: number;
+    shapes: Record<string, number>;
+    edgeKinds: Record<string, number>;
+  };
+  nodes: {
+    id: string;
+    label: string;
+    shape: string;
+    pinned: boolean;
+    inDegree: number;
+    outDegree: number;
+  }[];
+  edges: { from: string; to: string; kind: string; label?: string }[];
+  texts: { text: string; pinned: boolean }[];
+  freeShapes: { kind: string; from: [number, number]; to: [number, number]; label?: string }[];
+}
+
+const guessDiagramType = (
+  nodes: ReturnType<typeof parseDsl>["nodes"],
+  edges: ReturnType<typeof parseDsl>["edges"],
+  freeArrows: ReturnType<typeof parseDsl>["freeArrows"],
+  texts: ReturnType<typeof parseDsl>["texts"],
+): InspectResult["diagramType"] => {
+  if (nodes.length === 0 && edges.length === 0) {
+    if (freeArrows.length > 0 || texts.length > 0) return "free-form";
+    return "empty";
+  }
+  if (nodes.length > 0 && edges.length === 0 && freeArrows.length === 0) {
+    return "free-form";
+  }
+  const hasDiamond = nodes.some((n) => n.shape === "diamond");
+  const hasEllipse = nodes.some((n) => n.shape === "ellipse");
+  const hasElbow = edges.some((e) => e.kind === "elbow");
+  // build adjacency
+  const inDeg = new Map<string, number>();
+  const outDeg = new Map<string, number>();
+  for (const e of edges) {
+    outDeg.set(e.from, (outDeg.get(e.from) ?? 0) + 1);
+    inDeg.set(e.to, (inDeg.get(e.to) ?? 0) + 1);
+  }
+  const selfLoops = edges.filter((e) => e.from === e.to).length;
+  const maxIn = Math.max(0, ...Array.from(inDeg.values()));
+  const maxOut = Math.max(0, ...Array.from(outDeg.values()));
+  if (selfLoops > 0 || (hasEllipse && hasElbow)) return "state-machine";
+  if (hasDiamond) return "flowchart";
+  // tree heuristic: every node has at most 1 incoming, and edges form a DAG
+  if (maxIn <= 1 && edges.length === nodes.length - 1) return "tree";
+  // sequence: linear chain (each node deg<=2, edges == nodes-1)
+  if (
+    maxIn <= 1 &&
+    maxOut <= 1 &&
+    edges.length >= Math.max(1, nodes.length - 2) &&
+    edges.length <= nodes.length
+  ) {
+    return "sequence";
+  }
+  if (maxIn >= 3 || maxOut >= 3) return "network";
+  return "flowchart";
+};
+
+// Structured analysis used by POST /inspect. Parser-only (no buildScene).
+// Returns enough metadata for an agent to reason about an existing diagram
+// without re-tokenising the DSL itself.
+export const inspectDsl = (code: string): InspectResult => {
+  const parsed = parseDsl(code);
+  const declaredIds = new Set(parsed.nodes.map((n) => n.id));
+
+  // Synthesise any nodes that are referenced by an edge but not declared,
+  // matching buildScene's "auto-create rectangle" behavior.
+  const referenced = new Set<string>();
+  for (const e of parsed.edges) {
+    referenced.add(e.from);
+    referenced.add(e.to);
+  }
+  const allNodes = [
+    ...parsed.nodes,
+    ...Array.from(referenced)
+      .filter((id) => !declaredIds.has(id))
+      .map((id) => ({ id, label: id, shape: "rectangle" as const })),
+  ];
+
+  const inDeg = new Map<string, number>();
+  const outDeg = new Map<string, number>();
+  for (const e of parsed.edges) {
+    outDeg.set(e.from, (outDeg.get(e.from) ?? 0) + 1);
+    inDeg.set(e.to, (inDeg.get(e.to) ?? 0) + 1);
+  }
+
+  const shapes: Record<string, number> = {};
+  const edgeKinds: Record<string, number> = {};
+  for (const n of allNodes) shapes[n.shape] = (shapes[n.shape] ?? 0) + 1;
+  for (const e of parsed.edges) edgeKinds[e.kind] = (edgeKinds[e.kind] ?? 0) + 1;
+  for (const f of parsed.freeArrows) edgeKinds[f.kind] = (edgeKinds[f.kind] ?? 0) + 1;
+
+  const warnings: string[] = [];
+  // orphan nodes (no incoming + no outgoing edges)
+  if (allNodes.length > 1) {
+    for (const n of allNodes) {
+      if ((inDeg.get(n.id) ?? 0) === 0 && (outDeg.get(n.id) ?? 0) === 0) {
+        warnings.push(`Node "${n.id}" is isolated (no edges).`);
+      }
+    }
+  }
+  for (const e of parsed.edges) {
+    if (e.from === e.to) {
+      warnings.push(`Edge "${e.from} -> ${e.to}" is a self-loop.`);
+    }
+  }
+  const autoCreated = allNodes.filter((n) => !declaredIds.has(n.id));
+  if (autoCreated.length > 0) {
+    warnings.push(
+      `Auto-created ${autoCreated.length} node(s) referenced by edges but never declared: ${autoCreated.map((n) => n.id).join(", ")}.`,
+    );
+  }
+
+  return {
+    valid: parsed.errors.length === 0,
+    errors: parsed.errors.map((e) => ({ line: e.line, message: e.message })),
+    warnings,
+    diagramType: guessDiagramType(
+      parsed.nodes,
+      parsed.edges,
+      parsed.freeArrows,
+      parsed.texts,
+    ),
+    counts: {
+      nodes: allNodes.length,
+      edges: parsed.edges.length,
+      texts: parsed.texts.length,
+      freeShapes: parsed.freeArrows.length,
+      shapes,
+      edgeKinds,
+    },
+    nodes: allNodes.map((n) => ({
+      id: n.id,
+      label: n.label,
+      shape: n.shape,
+      pinned: "x" in n && typeof (n as { x?: number }).x === "number",
+      inDegree: inDeg.get(n.id) ?? 0,
+      outDegree: outDeg.get(n.id) ?? 0,
+    })),
+    edges: parsed.edges.map((e) => ({
+      from: e.from,
+      to: e.to,
+      kind: e.kind,
+      label: e.label,
+    })),
+    texts: parsed.texts.map((t) => ({
+      text: t.text,
+      pinned: typeof t.x === "number",
+    })),
+    freeShapes: parsed.freeArrows.map((f) => ({
+      kind: f.kind,
+      from: [f.fromX, f.fromY] as [number, number],
+      to: [f.toX, f.toY] as [number, number],
+      label: f.label,
+    })),
+  };
+};
+
 // Default ink color used by buildScene. When exporting in dark theme we
 // swap any occurrence with a light tone so strokes and text stay legible
 // on the dark canvas. User-specified colors (anything other than the

@@ -351,6 +351,7 @@ The companion `codedraw-api` service renders DSL headlessly via Playwright.
 | GET | `/examples` | JSON array of curated named snippets (`{ id, name, description, code }`) — good for few-shot prompting |
 | GET | `/openapi.json` | OpenAPI 3.1 spec; import directly into Custom GPT Actions or any MCP discovery tool |
 | POST | `/validate` | `{ code }` → `{ valid, errors }`, parser-only, no render — use this in an agent correction loop before paying for `/render` |
+| POST | `/inspect` | `{ code }` → `{ valid, errors, warnings, diagramType, counts, nodes, edges, texts, freeShapes }` — structured semantic analysis (parser + layout + degree counts + heuristic classification: flowchart / sequence / state-machine / tree / network / free-form) |
 | POST | `/render` | the main render call (see below) |
 
 **Endpoint:** `POST /render`
@@ -468,3 +469,50 @@ origin) so generated diagrams appear in the middle of the canvas on first
 load. As soon as **any** node uses `at:`, all coordinates are treated as
 absolute and no centering shift is applied.
 
+
+---
+
+## MCP server
+
+CodeDraw ships a Model Context Protocol server (`codedraw-mcp`) that wraps
+the REST API as a set of tools any MCP-aware client can discover and call
+(ChatGPT Developer-Mode connectors, Claude Desktop, Cursor, the MCP
+Inspector, etc.). The MCP server is a thin adapter — all DSL logic lives
+in the API (`/validate`, `/inspect`, `/render`, `/grammar`, `/examples`).
+
+**Production endpoint:** `https://codedraw.dehlwes.net/mcp`
+**Local dev endpoint:** `http://localhost:3020/mcp`
+**Transport:** Streamable HTTP, stateless (each POST is independent).
+
+### Available tools
+
+| tool | input | output |
+|------|-------|--------|
+| `render_diagram` | `{ code, format?: "svg"\|"png"\|"json", theme?, background?, scale?, padding? }` | SVG string (default) / PNG image content block / Excalidraw JSON, plus `structuredContent` with width/height |
+| `validate_diagram` | `{ code }` | `{ valid, errors }` — parser-only, fast feedback loop |
+| `inspect_diagram` | `{ code }` | Full `/inspect` payload (diagramType, counts, nodes, edges, warnings) |
+| `get_grammar` | — | Plain-text DSL grammar reference |
+| `get_examples` | — | Curated named snippets (`{ id, name, description, code }[]`) for few-shot prompting |
+
+### ChatGPT Developer-Mode setup
+
+1. Open ChatGPT → Settings → Apps & Connectors → enable Developer mode.
+2. Click "Create connector".
+3. **Name:** `CodeDraw`  **URL:** `https://codedraw.dehlwes.net/mcp`
+4. Description (paste verbatim):
+   > Use CodeDraw whenever the user asks for a diagram, flowchart, state machine, sequence, tree, network, or any other shape-and-arrow drawing. Write the diagram in CodeDraw's tiny DSL (`node …`, `edge a -> b`, `edge a ~> b` for elbow, `edge a -- b` for line, `text`, `arrow/elbow/line` for free shapes), call `validate_diagram` first if you are uncertain, then `render_diagram` (default SVG, request `format: "png"` to embed an image). Use `get_grammar` and `get_examples` for reference. Never invent your own diagram syntax.
+
+5. Save and start a new chat.
+
+### Local dev
+
+```bash
+# 1. start the API (port 3010)
+cd codedraw-api && yarn dev
+
+# 2. start the MCP adapter (port 3020)
+cd codedraw-mcp && yarn dev
+
+# 3. smoke-test
+curl http://localhost:3020/health
+```

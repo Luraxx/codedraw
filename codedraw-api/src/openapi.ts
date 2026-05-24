@@ -100,6 +100,28 @@ export const buildOpenApiSpec = (publicBaseUrl: string) => ({
         },
       },
     },
+    "/inspect": {
+      post: {
+        operationId: "inspectDsl",
+        summary: "Parse DSL and return a structured analysis",
+        description:
+          "Returns counts, classified shapes, edge kinds, in/out-degree per node, a guessed diagram type and a list of warnings. Useful for agents that need to reason about an existing diagram before modifying it.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ValidateBody" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Inspection result",
+            content: { "application/json": { schema: { type: "object" } } },
+          },
+        },
+      },
+    },
     "/render": {
       post: {
         operationId: "renderDiagram",

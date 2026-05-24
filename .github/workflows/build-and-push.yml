@@ -25,6 +25,9 @@ jobs:
           - image: codedraw-api
             context: ./codedraw-api
             dockerfile: ./codedraw-api/Dockerfile
+          - image: codedraw-mcp
+            context: ./codedraw-mcp
+            dockerfile: ./codedraw-mcp/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v4

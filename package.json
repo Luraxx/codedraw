@@ -5,6 +5,7 @@
   "workspaces": [
     "codedraw-app",
     "codedraw-api",
+    "codedraw-mcp",
     "packages/*"
   ],
   "devDependencies": {
