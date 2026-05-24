@@ -62,6 +62,94 @@ const createServer = (): McpServer => {
   });
 
   // ────────────────────────────────────────────────────────────
+  // ChatGPT Apps SDK UI widget
+  //
+  // Registered as an MCP resource at ui://widget/codedraw-preview.html with
+  // the mcp-app HTML profile so ChatGPT mounts it in an iframe instead of
+  // just showing the raw tool output as text. The widget reads the live
+  // tool result from window.openai.toolOutput (provided by the host) and
+  // inlines the SVG into the document.
+  // ────────────────────────────────────────────────────────────
+  const WIDGET_URI = "ui://widget/codedraw-preview.html";
+  const WIDGET_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CodeDraw preview</title>
+<style>
+  html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1e1e1e}
+  #root{display:flex;align-items:center;justify-content:center;min-height:240px;padding:12px;box-sizing:border-box}
+  #root>svg{max-width:100%;height:auto;display:block}
+  #root>img{max-width:100%;height:auto;display:block}
+  #empty{font-size:13px;color:#777}
+  @media (prefers-color-scheme: dark){body{color:#e6e6e6}#empty{color:#999}}
+</style>
+</head>
+<body>
+<div id="root"><div id="empty">No diagram yet.</div></div>
+<script>
+(function(){
+  function render(out){
+    var root = document.getElementById("root");
+    if(!out){ return; }
+    if(out.format === "svg" && typeof out.svg === "string"){
+      root.innerHTML = out.svg;
+      return;
+    }
+    if(out.format === "png" && typeof out.png === "string"){
+      var img = document.createElement("img");
+      img.src = "data:image/png;base64," + out.png;
+      if(out.width) img.width = out.width;
+      if(out.height) img.height = out.height;
+      root.innerHTML = "";
+      root.appendChild(img);
+      return;
+    }
+    if(out.format === "json"){
+      var pre = document.createElement("pre");
+      pre.style.whiteSpace = "pre-wrap";
+      pre.style.fontSize = "11px";
+      pre.textContent = JSON.stringify(out.scene, null, 2);
+      root.innerHTML = "";
+      root.appendChild(pre);
+    }
+  }
+  try {
+    if(window.openai && window.openai.toolOutput){ render(window.openai.toolOutput); }
+    if(window.openai && typeof window.openai.subscribe === "function"){
+      window.openai.subscribe(function(state){
+        if(state && state.toolOutput) render(state.toolOutput);
+      });
+    }
+  } catch(e){
+    document.getElementById("root").textContent = "widget error: " + e.message;
+  }
+})();
+</script>
+</body>
+</html>`;
+
+  server.registerResource(
+    "codedraw-preview",
+    WIDGET_URI,
+    {
+      title: "CodeDraw preview",
+      description: "Inline iframe widget that renders the SVG / PNG / JSON returned by render_diagram.",
+      mimeType: "text/html;profile=mcp-app",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "text/html;profile=mcp-app",
+          text: WIDGET_HTML,
+        },
+      ],
+    }),
+  );
+
+  // ────────────────────────────────────────────────────────────
   // render_diagram
   // ────────────────────────────────────────────────────────────
   server.registerTool(
@@ -72,6 +160,11 @@ const createServer = (): McpServer => {
         "Render a CodeDraw DSL diagram. Use this whenever the user asks to draw, render, create, preview, sketch or export a diagram, flowchart, state machine, ER diagram, architecture sketch or any other visual graph. " +
         "Input is the CodeDraw DSL source code (see get_grammar for the full reference and get_examples for ready-made snippets). " +
         "Default format is SVG (text, embeddable). Use format=png to receive a PNG image content block.",
+      _meta: {
+        // ChatGPT Apps SDK — bind this tool's output to the preview widget.
+        "openai/outputTemplate": WIDGET_URI,
+        ui: { resourceUri: WIDGET_URI },
+      },
       inputSchema: {
         code: z.string().min(1).describe("CodeDraw DSL source code"),
         format: z.enum(["svg", "png", "json"]).default("svg"),
@@ -109,7 +202,9 @@ const createServer = (): McpServer => {
         };
       }
 
-      // png
+      // png — return both an MCP image content block (so other clients see
+      // the bitmap natively) and the base64 payload inside structuredContent
+      // so the Apps SDK widget can render it inside the iframe.
       const buf = Buffer.from(await res.arrayBuffer());
       const base64 = buf.toString("base64");
       const dims = extractPngDims(buf);
@@ -121,7 +216,7 @@ const createServer = (): McpServer => {
             mimeType: "image/png",
           },
         ],
-        structuredContent: { format: "png", ...dims },
+        structuredContent: { format: "png", ...dims, png: base64 },
       };
     },
   );
