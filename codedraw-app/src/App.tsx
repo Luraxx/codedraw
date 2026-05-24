@@ -20,6 +20,7 @@ import { parseDsl } from "./dsl/parser";
 import { buildScene } from "./dsl/buildScene";
 import { serializeScene } from "./dsl/serialize";
 import { DEFAULT_CODE } from "./defaultCode";
+import { EXAMPLES } from "./examples";
 import "./app.css";
 
 const STORAGE_KEY = "codedraw:source:v4";
@@ -455,6 +456,26 @@ const App = () => {
         <h1>CodeDraw</h1>
         <span style={{ opacity: 0.6 }}>code ⇄ diagram</span>
         <span className="cd-spacer" />
+        <select
+          className="cd-btn"
+          defaultValue=""
+          onChange={(e) => {
+            const ex = EXAMPLES.find((x) => x.id === e.target.value);
+            if (ex) setSource(ex.code);
+            e.target.value = "";
+          }}
+          title="Load a curated example into the editor"
+          aria-label="Load example"
+        >
+          <option value="" disabled>
+            Load example…
+          </option>
+          {EXAMPLES.map((ex) => (
+            <option key={ex.id} value={ex.id} title={ex.description}>
+              {ex.name}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           className="cd-btn"

@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { renderSvg, renderPng, renderJson } from "./render";
+import { renderSvg, renderPng, renderJson, validateDsl } from "./render";
 
 const params = new URLSearchParams(window.location.search);
 const isRenderMode = params.get("mode") === "render";
@@ -12,6 +12,7 @@ declare global {
       renderSvg: typeof renderSvg;
       renderPng: typeof renderPng;
       renderJson: typeof renderJson;
+      validateDsl: typeof validateDsl;
       ready: true;
     };
   }
@@ -19,7 +20,7 @@ declare global {
 
 if (isRenderMode) {
   // Headless export mode: expose API on window, render nothing visible.
-  window.codedraw = { renderSvg, renderPng, renderJson, ready: true };
+  window.codedraw = { renderSvg, renderPng, renderJson, validateDsl, ready: true };
   document.body.style.background = "#000";
   const root = document.getElementById("root");
   if (root) {

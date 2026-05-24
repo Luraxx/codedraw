@@ -338,6 +338,21 @@ Code → canvas → code produces identical output for any well-formed input (po
 
 The companion `codedraw-api` service renders DSL headlessly via Playwright.
 
+**Production base:** `https://codedraw.dehlwes.net/api`
+**Local dev base:** `http://localhost:3010`
+
+### Discovery & helper endpoints
+
+| method | path | purpose |
+|--------|------|---------|
+| GET | `/health` | liveness + browser/page state |
+| GET | `/grammar` | plain-text grammar reference |
+| GET | `/example` | a single working DSL sample |
+| GET | `/examples` | JSON array of curated named snippets (`{ id, name, description, code }`) — good for few-shot prompting |
+| GET | `/openapi.json` | OpenAPI 3.1 spec; import directly into Custom GPT Actions or any MCP discovery tool |
+| POST | `/validate` | `{ code }` → `{ valid, errors }`, parser-only, no render — use this in an agent correction loop before paying for `/render` |
+| POST | `/render` | the main render call (see below) |
+
 **Endpoint:** `POST /render`
 **Production:** `https://codedraw.dehlwes.net/api/render`
 **Local dev:**  `http://localhost:3010/render`

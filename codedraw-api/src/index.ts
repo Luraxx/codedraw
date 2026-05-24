@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import { chromium, type Browser, type Page } from "playwright";
+import { EXAMPLES } from "./examples.js";
+import { buildOpenApiSpec } from "./openapi.js";
 
 declare global {
   interface Window {
@@ -8,6 +10,7 @@ declare global {
       renderSvg: (code: string, opts?: unknown) => Promise<{ svg: string; errors: unknown[] }>;
       renderPng: (code: string, opts?: unknown) => Promise<{ base64: string; errors: unknown[] }>;
       renderJson: (code: string) => Promise<unknown>;
+      validateDsl: (code: string) => { valid: boolean; errors: { line: number; message: string }[] };
     };
   }
 }
@@ -204,13 +207,45 @@ app.get("/example", async (_req, reply) => {
   return EXAMPLE_CODE;
 });
 
+app.get("/examples", async () => EXAMPLES);
+
+app.get("/openapi.json", async (req) => {
+  // Use the request's forwarded host so the spec advertises the same base
+  // URL that the caller used (e.g. https://codedraw.dehlwes.net/api).
+  const proto = (req.headers["x-forwarded-proto"] as string) ?? "http";
+  const host = (req.headers["x-forwarded-host"] as string) ?? req.headers.host ?? "localhost";
+  const prefix = (req.headers["x-forwarded-prefix"] as string) ?? "";
+  return buildOpenApiSpec(`${proto}://${host}${prefix}`);
+});
+
+app.post<{ Body: { code?: unknown } }>("/validate", async (req, reply) => {
+  const code = req.body?.code;
+  if (typeof code !== "string" || code.length === 0) {
+    return reply.code(400).send({ error: "missing 'code' string" });
+  }
+  if (Buffer.byteLength(code, "utf8") > MAX_CODE_BYTES) {
+    return reply.code(413).send({ error: "code too large" });
+  }
+  return runQueued(async () => {
+    const p = await getPage();
+    const result = await p.evaluate(
+      ([c]) => window.codedraw!.validateDsl(c as string),
+      [code] as const,
+    );
+    return result;
+  });
+});
+
 app.get("/", async () => ({
   name: "codedraw-api",
   endpoints: {
-    "GET /health":   "liveness + browser/page state",
-    "GET /grammar":  "plain-text grammar reference",
-    "GET /example":  "plain-text working DSL sample",
-    "POST /render":  "{ code, format?, scale?, padding?, background?, theme? } -> png | svg | json",
+    "GET /health":        "liveness + browser/page state",
+    "GET /grammar":       "plain-text grammar reference",
+    "GET /example":       "plain-text working DSL sample",
+    "GET /examples":      "JSON array of curated named snippets",
+    "GET /openapi.json":  "OpenAPI 3.1 spec (import into Custom GPT Actions)",
+    "POST /validate":     "{ code } -> { valid, errors } (parser-only, cheap)",
+    "POST /render":       "{ code, format?, scale?, padding?, background?, theme? } -> png | svg | json",
   },
   formats: ["png", "svg", "json"],
   shapes: ["rectangle", "ellipse", "diamond"],

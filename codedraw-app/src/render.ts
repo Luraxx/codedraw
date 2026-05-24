@@ -54,6 +54,22 @@ const parseAndBuild = (code: string): ParsePayload => {
   return { ok: parsed.errors.length === 0, errors: parsed.errors, elements };
 };
 
+export interface ValidateResult {
+  valid: boolean;
+  errors: { line: number; message: string }[];
+}
+
+// Parser-only check used by POST /validate. Skips buildScene (no dagre, no
+// element synthesis) so it's roughly an order of magnitude cheaper than a
+// full render and safe to call in an agent correction loop.
+export const validateDsl = (code: string): ValidateResult => {
+  const parsed = parseDsl(code);
+  return {
+    valid: parsed.errors.length === 0,
+    errors: parsed.errors.map((e) => ({ line: e.line, message: e.message })),
+  };
+};
+
 // Default ink color used by buildScene. When exporting in dark theme we
 // swap any occurrence with a light tone so strokes and text stay legible
 // on the dark canvas. User-specified colors (anything other than the
