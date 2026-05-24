@@ -488,21 +488,73 @@ in the API (`/validate`, `/inspect`, `/render`, `/grammar`, `/examples`).
 
 | tool | input | output |
 |------|-------|--------|
-| `render_diagram` | `{ code, format?: "svg"\|"png"\|"json", theme?, background?, scale?, padding? }` | SVG string (default) / PNG image content block / Excalidraw JSON, plus `structuredContent` with width/height |
+| `render_diagram` | `{ code, format?: "svg"\|"png"\|"json", theme?, background?, scale?, padding? }` | `content` = SVG text / PNG image block / JSON text; `structuredContent` = `{ format, width, height, svg? }` for SVG, `{ format, width, height, png? }` (base64) for PNG, `{ format, scene }` for JSON. In ChatGPT Developer-Mode the result renders as an inline visual preview via the MCP Apps SDK widget. |
 | `validate_diagram` | `{ code }` | `{ valid, errors }` — parser-only, fast feedback loop |
 | `inspect_diagram` | `{ code }` | Full `/inspect` payload (diagramType, counts, nodes, edges, warnings) |
 | `get_grammar` | — | Plain-text DSL grammar reference |
 | `get_examples` | — | Curated named snippets (`{ id, name, description, code }[]`) for few-shot prompting |
 
-### ChatGPT Developer-Mode setup
+### Client setup
 
-1. Open ChatGPT → Settings → Apps & Connectors → enable Developer mode.
-2. Click "Create connector".
-3. **Name:** `CodeDraw`  **URL:** `https://codedraw.dehlwes.net/mcp`
-4. Description (paste verbatim):
+#### ChatGPT (Developer-Mode connector) — inline diagram preview
+
+1. Settings → **Apps & Connectors** → enable **Developer mode**.
+2. **Create connector** → Name `CodeDraw`, URL `https://codedraw.dehlwes.net/mcp`.
+3. Description (paste verbatim):
    > Use CodeDraw whenever the user asks for a diagram, flowchart, state machine, sequence, tree, network, or any other shape-and-arrow drawing. Write the diagram in CodeDraw's tiny DSL (`node …`, `edge a -> b`, `edge a ~> b` for elbow, `edge a -- b` for line, `text`, `arrow/elbow/line` for free shapes), call `validate_diagram` first if you are uncertain, then `render_diagram` (default SVG, request `format: "png"` to embed an image). Use `get_grammar` and `get_examples` for reference. Never invent your own diagram syntax.
+4. Save and start a new chat.
 
-5. Save and start a new chat.
+#### Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "codedraw": {
+      "type": "http",
+      "url": "https://codedraw.dehlwes.net/mcp"
+    }
+  }
+}
+```
+
+#### Cursor
+
+`.cursor/mcp.json` in the project root (or Settings → MCP):
+
+```json
+{
+  "mcpServers": {
+    "codedraw": {
+      "type": "http",
+      "url": "https://codedraw.dehlwes.net/mcp"
+    }
+  }
+}
+```
+
+#### VS Code (GitHub Copilot agent mode)
+
+`.vscode/mcp.json` in the workspace:
+
+```json
+{
+  "servers": {
+    "codedraw": {
+      "type": "http",
+      "url": "https://codedraw.dehlwes.net/mcp"
+    }
+  }
+}
+```
+
+#### MCP Inspector (smoke test)
+
+```bash
+npx @modelcontextprotocol/inspector https://codedraw.dehlwes.net/mcp
+```
 
 ### Local dev
 
