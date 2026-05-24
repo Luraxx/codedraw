@@ -6,6 +6,7 @@
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-codedraw.dehlwes.net-4263eb?style=flat-square&logo=globe&logoColor=white)](https://codedraw.dehlwes.net)
 [![Render API](https://img.shields.io/badge/API-POST_%2Frender-51cf66?style=flat-square&logo=fastify&logoColor=white)](https://codedraw.dehlwes.net/api/render)
+[![MCP Server](https://img.shields.io/badge/MCP-codedraw.dehlwes.net%2Fmcp-f76707?style=flat-square&logo=openai&logoColor=white)](https://codedraw.dehlwes.net/mcp)
 [![MIT License](https://img.shields.io/badge/license-MIT-adb5bd?style=flat-square)](LICENSE)
 
 <table><tr><td width="55%">
@@ -118,7 +119,20 @@ Run the API in dev (the web app must be up — the API loads it headlessly):
 
 ```bash
 CODEDRAW_WEB_URL=http://localhost:3001 yarn --cwd codedraw-api dev
-# API listens on http://localhost:3000
+# API listens on http://localhost:3010
+```
+
+Run the MCP server in dev (the API must be up):
+
+```bash
+CODEDRAW_API_URL=http://localhost:3010 yarn --cwd codedraw-mcp dev
+# MCP listens on http://localhost:3020
+```
+
+Or start everything at once via Docker Compose:
+
+```bash
+docker compose up
 ```
 
 ## HTTP API
@@ -221,38 +235,137 @@ write "diagram.png", png
 
 If `x-codedraw-errors` is non-empty, re-prompt the model with those errors.
 
-## MCP server (ChatGPT / Claude / Cursor)
+## MCP server
 
-CodeDraw exposes its tools over the **Model Context Protocol** so any
-MCP-aware client (ChatGPT Developer-Mode connectors, Claude Desktop,
-Cursor, the MCP Inspector) can discover and use them.
+CodeDraw ships a [Model Context Protocol](https://modelcontextprotocol.io/)
+server that lets **ChatGPT, Claude, Cursor** and any other MCP-aware client
+draw diagrams by writing DSL — with a live inline preview in supported hosts.
 
-**Connector URL:** `https://codedraw.dehlwes.net/mcp`
-**Transport:** Streamable HTTP, stateless.
+| | |
+|---|---|
+| **MCP endpoint** | `https://codedraw.dehlwes.net/mcp` |
+| **Transport** | Streamable HTTP, stateless |
+| **Auth** | none (open) |
 
 ### Available tools
 
-- `render_diagram` — DSL → SVG (default) / PNG image / Excalidraw JSON
-- `validate_diagram` — fast parser-only check
-- `inspect_diagram` — structured analysis (type, counts, warnings)
-- `get_grammar` — DSL grammar reference
-- `get_examples` — curated DSL snippets
+| Tool | What it does |
+|------|-------------|
+| `render_diagram` | DSL → **SVG** (default) / PNG image / Excalidraw JSON. In ChatGPT Developer-Mode the result is shown as an inline visual preview. |
+| `validate_diagram` | Fast parser-only check — use in an agent correction loop before paying for a full render. |
+| `inspect_diagram` | Structured analysis: `diagramType`, node/edge counts, degree warnings, `fromSide`/`toSide` hints. |
+| `get_grammar` | Full DSL grammar reference as plain text — drop into the system prompt. |
+| `get_examples` | Curated named DSL snippets for few-shot prompting. |
 
-### ChatGPT Developer-Mode setup
+---
 
-1. Settings → Apps & Connectors → enable **Developer mode**.
-2. **Create connector** → Name `CodeDraw`, URL `https://codedraw.dehlwes.net/mcp`.
-3. Paste this description so the model uses it eagerly:
+### ChatGPT (Developer-Mode connector)
+
+> Renders diagrams as **interactive inline previews** via the MCP Apps SDK widget.
+
+1. Open ChatGPT → **Settings → Apps & Connectors** → enable **Developer mode**.
+2. Click **Create connector**.
+3. Fill in:
+   - **Name:** `CodeDraw`
+   - **URL:** `https://codedraw.dehlwes.net/mcp`
+4. In the **Description** field paste exactly:
 
    > Use CodeDraw whenever the user asks for a diagram, flowchart, state machine, sequence, tree, network, or any other shape-and-arrow drawing. Write the diagram in CodeDraw's tiny DSL (`node …`, `edge a -> b`, `edge a ~> b` for elbow, `edge a -- b` for line, `text`, `arrow/elbow/line` for free shapes), call `validate_diagram` first if you are uncertain, then `render_diagram` (default SVG, request `format: "png"` to embed an image). Use `get_grammar` and `get_examples` for reference. Never invent your own diagram syntax.
 
-### Local dev
+5. Save and start a new chat. Ask *"Draw a login flow"* — ChatGPT will call `render_diagram` and show the diagram inline.
+
+---
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "codedraw": {
+      "type": "http",
+      "url": "https://codedraw.dehlwes.net/mcp"
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The five tools appear automatically; ask Claude to draw
+a diagram and it will call `render_diagram` and return the SVG inline.
+
+---
+
+### Cursor
+
+Open **Settings → MCP** (or edit `.cursor/mcp.json` in your project root):
+
+```json
+{
+  "mcpServers": {
+    "codedraw": {
+      "type": "http",
+      "url": "https://codedraw.dehlwes.net/mcp"
+    }
+  }
+}
+```
+
+In Agent mode, ask Cursor to create an architecture diagram — it will write DSL
+and call `render_diagram`, returning the SVG you can embed in docs or open in
+the browser.
+
+---
+
+### VS Code (GitHub Copilot agent mode)
+
+Add to `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "codedraw": {
+      "type": "http",
+      "url": "https://codedraw.dehlwes.net/mcp"
+    }
+  }
+}
+```
+
+---
+
+### MCP Inspector (debug / smoke test)
 
 ```bash
-cd codedraw-api && yarn dev          # port 3010
-cd codedraw-mcp && yarn dev          # port 3020 (proxies to API)
-curl http://localhost:3020/health
+npx @modelcontextprotocol/inspector https://codedraw.dehlwes.net/mcp
 ```
+
+Opens a browser UI where you can call tools, inspect the widget resource, and
+verify `structuredContent` shape before wiring up a real client.
+
+---
+
+### Self-hosting the MCP server
+
+```bash
+# env vars required
+CODEDRAW_API_URL=http://localhost:3010   # URL of the codedraw-api service
+PORT=3020
+
+cd codedraw-mcp && yarn dev
+```
+
+Docker Compose already wires everything:
+
+```bash
+docker compose up
+# web  → http://localhost:8080
+# api  → http://localhost:8081
+# mcp  → http://localhost:8082/mcp
+```
+
+---
 
 ## License & credits
 
