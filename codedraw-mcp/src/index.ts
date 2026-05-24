@@ -70,7 +70,7 @@ const createServer = (): McpServer => {
   // tool result from window.openai.toolOutput (provided by the host) and
   // inlines the SVG into the document.
   // ────────────────────────────────────────────────────────────
-  const WIDGET_URI = "ui://widget/codedraw-preview.html";
+  const WIDGET_URI = "ui://widget/codedraw-preview-v2.html";
   const WIDGET_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -83,6 +83,7 @@ const createServer = (): McpServer => {
   #root>svg{max-width:100%;height:auto;display:block}
   #root>img{max-width:100%;height:auto;display:block}
   #empty{font-size:13px;color:#777}
+  pre{white-space:pre-wrap;font-size:11px;margin:0}
   @media (prefers-color-scheme: dark){body{color:#e6e6e6}#empty{color:#999}}
 </style>
 </head>
@@ -90,41 +91,54 @@ const createServer = (): McpServer => {
 <div id="root"><div id="empty">No diagram yet.</div></div>
 <script>
 (function(){
+  var root = document.getElementById("root");
   function render(out){
-    var root = document.getElementById("root");
-    if(!out){ return; }
+    if(!out) return;
     if(out.format === "svg" && typeof out.svg === "string"){
       root.innerHTML = out.svg;
       return;
     }
     if(out.format === "png" && typeof out.png === "string"){
+      root.innerHTML = "";
       var img = document.createElement("img");
       img.src = "data:image/png;base64," + out.png;
       if(out.width) img.width = out.width;
       if(out.height) img.height = out.height;
-      root.innerHTML = "";
       root.appendChild(img);
       return;
     }
     if(out.format === "json"){
-      var pre = document.createElement("pre");
-      pre.style.whiteSpace = "pre-wrap";
-      pre.style.fontSize = "11px";
-      pre.textContent = JSON.stringify(out.scene, null, 2);
       root.innerHTML = "";
+      var pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(out.scene, null, 2);
       root.appendChild(pre);
     }
   }
-  try {
-    if(window.openai && window.openai.toolOutput){ render(window.openai.toolOutput); }
-    if(window.openai && typeof window.openai.subscribe === "function"){
-      window.openai.subscribe(function(state){
-        if(state && state.toolOutput) render(state.toolOutput);
-      });
-    }
-  } catch(e){
-    document.getElementById("root").textContent = "widget error: " + e.message;
+  function fromToolResult(params){
+    if(!params) return;
+    var sc = params.structuredContent || params.toolOutput;
+    if(sc) render(sc);
   }
+  // 1. Initial value from window.openai (Apps SDK compatibility layer)
+  try {
+    if(typeof window !== "undefined" && window.openai && window.openai.toolOutput){
+      render(window.openai.toolOutput);
+    }
+  } catch(_){}
+  // 2. MCP Apps bridge — JSON-RPC tool-result notifications over postMessage
+  window.addEventListener("message", function(event){
+    if(event.source !== window.parent) return;
+    var msg = event.data;
+    if(!msg || msg.jsonrpc !== "2.0") return;
+    if(msg.method === "ui/notifications/tool-result"){
+      fromToolResult(msg.params);
+    }
+  }, { passive: true });
+  // 3. ChatGPT Apps SDK — openai:set_globals custom event
+  window.addEventListener("openai:set_globals", function(event){
+    var globals = event && event.detail && event.detail.globals;
+    if(globals && globals.toolOutput) render(globals.toolOutput);
+  }, { passive: true });
 })();
 </script>
 </body>
@@ -165,6 +179,11 @@ const createServer = (): McpServer => {
         "openai/outputTemplate": WIDGET_URI,
         ui: { resourceUri: WIDGET_URI },
       },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+        destructiveHint: false,
+      },
       inputSchema: {
         code: z.string().min(1).describe("CodeDraw DSL source code"),
         format: z.enum(["svg", "png", "json"]).default("svg"),
@@ -175,6 +194,14 @@ const createServer = (): McpServer => {
           .describe("Background color (hex or 'transparent')"),
         scale: z.number().min(0.25).max(5).default(1),
         padding: z.number().min(0).max(500).default(20),
+      },
+      outputSchema: {
+        format: z.enum(["svg", "png", "json"]),
+        width: z.number().optional(),
+        height: z.number().optional(),
+        svg: z.string().optional(),
+        png: z.string().optional().describe("base64-encoded PNG (no data: prefix)"),
+        scene: z.unknown().optional(),
       },
     },
     async ({ code, format, theme, background, scale, padding }) => {
