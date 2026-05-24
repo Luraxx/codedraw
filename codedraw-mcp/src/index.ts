@@ -9,7 +9,8 @@
 // All actual rendering / parsing is delegated to the existing codedraw-api
 // via fetch — this server holds no DSL logic of its own.
 
-import express, { type Request, type Response } from "express";import { z } from "zod";
+import express, { type Request } from "express";
+import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
