@@ -130,15 +130,59 @@ export interface ParseResult {
 }
 
 const ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// Headers may be followed by either an inline `{ k: v k: v }` block (entire
-// block on the header line) or an opening `{` that starts a multi-line block.
-const NODE_HEAD =
-  /^node\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
+// Headers capture only the leading keyword/ids; the trailing body (if any)
+// is classified separately by `classifyBody` so that braces inside quoted
+// labels do not confuse the matcher.
+const NODE_HEAD = /^node\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$/;
 const EDGE_HEAD =
-  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(~>|->|--)\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
-const SIMPLE_HEAD =
-  /^(elbow|arrow|line|text)(?:\s*\{([^{}]*)\}|\s*(\{))?\s*$/;
+  /^edge\s+([A-Za-z_][A-Za-z0-9_]*)\s*(~>|->|--)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$/;
+const SIMPLE_HEAD = /^(elbow|arrow|line|text)\s*(.*)$/;
 const KV_RE = /^([A-Za-z_]+)\s*:\s*(.*)$/;
+
+/**
+ * Classify the text that follows a header on the same line:
+ *   ""              -> bare (no block)
+ *   "{ k: v ... }"  -> inline block (returns content between braces)
+ *   "{"             -> multi-line block opener
+ * Brace matching is quote-aware so `{ label: "x {y} z" }` parses correctly.
+ */
+type BodyClassification =
+  | { kind: "bare" }
+  | { kind: "inline"; body: string }
+  | { kind: "open" }
+  | { kind: "malformed" };
+
+const classifyBody = (rest: string): BodyClassification => {
+  const s = rest.trim();
+  if (!s) return { kind: "bare" };
+  if (s[0] !== "{") return { kind: "malformed" };
+  if (s === "{") return { kind: "open" };
+  let i = 1;
+  let depth = 1;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"') {
+      i++;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === "\\" && i + 1 < s.length) i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        const tail = s.slice(i + 1).trim();
+        if (tail) return { kind: "malformed" };
+        return { kind: "inline", body: s.slice(1, i) };
+      }
+    }
+    i++;
+  }
+  return { kind: "malformed" };
+};
 
 const VALID_SHAPES: ReadonlySet<NodeShape> = new Set([
   "rectangle",
@@ -510,7 +554,7 @@ export const parseDsl = (source: string): ParseResult => {
 
     const nodeM = NODE_HEAD.exec(line);
     if (nodeM) {
-      const [, id, inline, brace] = nodeM;
+      const [, id, rest] = nodeM;
       if (!ID_RE.test(id)) {
         result.errors.push({ line: i + 1, raw, message: `Invalid id "${id}".` });
         i++;
@@ -525,13 +569,23 @@ export const parseDsl = (source: string): ParseResult => {
         i++;
         continue;
       }
+      const cls = classifyBody(rest);
+      if (cls.kind === "malformed") {
+        result.errors.push({
+          line: i + 1,
+          raw,
+          message: `Malformed block after "node ${id}".`,
+        });
+        i++;
+        continue;
+      }
       seenIds.set(id, i + 1);
       const node: ParsedNode = { id, label: id, shape: "rectangle" };
       const lineNo = i + 1;
       i++;
-      if (inline !== undefined) {
-        fillNode(node, parseInlineBlock(inline, lineNo), result);
-      } else if (brace) {
+      if (cls.kind === "inline") {
+        fillNode(node, parseInlineBlock(cls.body, lineNo), result);
+      } else if (cls.kind === "open") {
         const { body, nextIdx } = parseBlock(rawLines, i);
         fillNode(node, body, result);
         i = nextIdx;
@@ -542,7 +596,17 @@ export const parseDsl = (source: string): ParseResult => {
 
     const edgeM = EDGE_HEAD.exec(line);
     if (edgeM) {
-      const [, from, op, to, inline, brace] = edgeM;
+      const [, from, op, to, rest] = edgeM;
+      const cls = classifyBody(rest);
+      if (cls.kind === "malformed") {
+        result.errors.push({
+          line: i + 1,
+          raw,
+          message: `Malformed block after "edge ${from} ${op} ${to}".`,
+        });
+        i++;
+        continue;
+      }
       const edge: ParsedEdge = {
         from,
         to,
@@ -550,9 +614,9 @@ export const parseDsl = (source: string): ParseResult => {
       };
       const lineNo = i + 1;
       i++;
-      if (inline !== undefined) {
-        fillEdge(edge, parseInlineBlock(inline, lineNo), result);
-      } else if (brace) {
+      if (cls.kind === "inline") {
+        fillEdge(edge, parseInlineBlock(cls.body, lineNo), result);
+      } else if (cls.kind === "open") {
         const { body, nextIdx } = parseBlock(rawLines, i);
         fillEdge(edge, body, result);
         i = nextIdx;
@@ -563,13 +627,14 @@ export const parseDsl = (source: string): ParseResult => {
 
     const simpleM = SIMPLE_HEAD.exec(line);
     if (simpleM) {
-      const [, kw, inline, brace] = simpleM;
+      const [, kw, rest] = simpleM;
+      const cls = classifyBody(rest);
       const lineNo = i + 1;
       i++;
       let body: BlockBody | null = null;
-      if (inline !== undefined) {
-        body = parseInlineBlock(inline, lineNo);
-      } else if (brace) {
+      if (cls.kind === "inline") {
+        body = parseInlineBlock(cls.body, lineNo);
+      } else if (cls.kind === "open") {
         const parsedBlock = parseBlock(rawLines, i);
         body = parsedBlock.body;
         i = parsedBlock.nextIdx;
@@ -577,7 +642,10 @@ export const parseDsl = (source: string): ParseResult => {
         result.errors.push({
           line: lineNo,
           raw,
-          message: `"${kw}" requires a { ... } block.`,
+          message:
+            cls.kind === "malformed"
+              ? `Malformed block after "${kw}".`
+              : `"${kw}" requires a { ... } block.`,
         });
         continue;
       }
