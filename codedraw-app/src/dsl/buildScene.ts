@@ -38,16 +38,39 @@ const measureLabel = (
   const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
   let w = Math.max(DEFAULT_W, longest * CHAR_W + NODE_PAD_X * 2);
   let h = Math.max(DEFAULT_H, lines.length * LINE_H + NODE_PAD_Y * 2);
-  // Diamond clips labels at its corners — grow generously so text fits
-  // inside the inscribed rectangle (~70% of bbox each axis).
+  // For a rhombus the inscribed axis-aligned rectangle has size W/√2 ×
+  // H/√2. To fit a text rectangle of (w, h) inside the rhombus we need
+  // a bbox of ≈ w·√2 × h·√2. We bump the vertical growth a bit more for
+  // multi-line labels because Excalidraw centers the text vertically and
+  // the outer lines clip into the diamond corners.
   if (shape === "diamond") {
-    w = Math.round(w * 1.45);
-    h = Math.round(h * 1.45);
+    w = Math.round(w * 1.5);
+    h = Math.round(h * (lines.length > 1 ? 1.7 : 1.5));
   } else if (shape === "ellipse") {
-    w = Math.round(w * 1.2);
-    h = Math.round(h * 1.2);
+    // Ellipse: inscribed rectangle is w/√2 × h/√2 too. 1.25 keeps things
+    // tight but readable for typical single-line labels.
+    w = Math.round(w * 1.25);
+    h = Math.round(h * (lines.length > 1 ? 1.35 : 1.25));
   }
   return { w, h };
+};
+
+// Approximate size of an edge label box used to reserve space in dagre's
+// layout. Without this, edge labels are positioned at the midpoint of an
+// edge by Excalidraw and frequently land on top of an adjacent node
+// because dagre's ranksep doesn't know they exist.
+const measureEdgeLabel = (
+  label: string | undefined,
+): { w: number; h: number } => {
+  if (!label) return { w: 0, h: 0 };
+  const lines = label.split("\n");
+  const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  // Edge labels use Excalidraw's smaller bound-text font (~16px), so
+  // glyph width ≈ 8px, line height ≈ 20px. Add generous padding.
+  return {
+    w: longest * 8 + 16,
+    h: lines.length * 20 + 12,
+  };
 };
 
 interface NodeBox {
@@ -170,8 +193,9 @@ export const buildScene = (
     const g = new dagre.graphlib.Graph();
     g.setGraph({
       rankdir: "TB",
-      nodesep: 60,
-      ranksep: 80,
+      nodesep: 80,
+      ranksep: 110,
+      edgesep: 30,
       marginx: 40,
       marginy: 40,
     });
@@ -184,7 +208,13 @@ export const buildScene = (
       });
     }
     for (const e of parsed.edges) {
-      if (g.hasNode(e.from) && g.hasNode(e.to)) g.setEdge(e.from, e.to);
+      if (!g.hasNode(e.from) || !g.hasNode(e.to)) continue;
+      // Reserve space for edge labels so dagre keeps ranks far enough
+      // apart that the label doesn't crash into the neighbour node.
+      const lm = measureEdgeLabel(e.label);
+      g.setEdge(e.from, e.to, lm.w && lm.h
+        ? { width: lm.w, height: lm.h, labelpos: "c" }
+        : {});
     }
     dagre.layout(g);
     for (const n of parsed.nodes) {
@@ -221,10 +251,14 @@ export const buildScene = (
   // diagrams appear in the middle of the canvas (Excalidraw's default
   // viewport sits at the origin). We only shift when *every* node was
   // auto-positioned — as soon as the user pins anything with `at:`, all
-  // coordinates are treated as absolute and left alone.
+  // coordinates are treated as absolute and left alone. Texts and free
+  // arrows are shifted by the same offset so user-positioned labels
+  // (e.g. titles) keep their relative position to the diagram.
   const allAutoPositioned = parsed.nodes.every(
     (n) => n.x === undefined || n.y === undefined,
   );
+  let centerDx = 0;
+  let centerDy = 0;
   if (allAutoPositioned && boxes.size > 0) {
     let minX = Infinity;
     let minY = Infinity;
@@ -236,11 +270,11 @@ export const buildScene = (
       if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y + b.h > maxY) maxY = b.y + b.h;
     }
-    const dx = -(minX + maxX) / 2;
-    const dy = -(minY + maxY) / 2;
-    if (dx !== 0 || dy !== 0) {
+    centerDx = -(minX + maxX) / 2;
+    centerDy = -(minY + maxY) / 2;
+    if (centerDx !== 0 || centerDy !== 0) {
       for (const [id, b] of boxes) {
-        boxes.set(id, { ...b, x: b.x + dx, y: b.y + dy });
+        boxes.set(id, { ...b, x: b.x + centerDx, y: b.y + centerDy });
       }
     }
   }
@@ -470,13 +504,20 @@ export const buildScene = (
     const isElbow = a.kind === "elbow";
     const isLine = a.kind === "line";
     const type: "arrow" | "line" = isLine ? "line" : "arrow";
+    // Shift with the auto-centering offset so absolute coordinates stay
+    // relative to the diagram (otherwise free arrows defined alongside
+    // auto-laid-out nodes end up far off-canvas).
+    const fromX = a.fromX + centerDx;
+    const fromY = a.fromY + centerDy;
+    const toX = a.toX + centerDx;
+    const toY = a.toY + centerDy;
     const skel: Record<string, unknown> = {
       type,
-      x: a.fromX,
-      y: a.fromY,
+      x: fromX,
+      y: fromY,
       points: [
         [0, 0],
-        [a.toX - a.fromX, a.toY - a.fromY],
+        [toX - fromX, toY - fromY],
       ],
       strokeColor: "#1e1e1e",
     };
@@ -488,8 +529,8 @@ export const buildScene = (
       if (isLine) {
         skeleton.push({
           type: "text",
-          x: (a.fromX + a.toX) / 2 - a.label.length * 4,
-          y: (a.fromY + a.toY) / 2 - 22,
+          x: (fromX + toX) / 2 - a.label.length * 4,
+          y: (fromY + toY) / 2 - 22,
           text: a.label,
           fontSize: 16,
         } as Skel);
@@ -509,8 +550,13 @@ export const buildScene = (
   const baseY = allYs.length ? Math.max(...allYs) + 40 : 0;
   let cursor = 0;
   for (const t of parsed.texts) {
-    const x = t.x ?? baseX;
-    const y = t.y ?? baseY + cursor * 32;
+    // When the diagram was auto-centered around (0, 0), shift user-pinned
+    // text positions by the same offset so titles / annotations keep
+    // their relative position to the diagram.
+    const userX = t.x !== undefined ? t.x + centerDx : undefined;
+    const userY = t.y !== undefined ? t.y + centerDy : undefined;
+    const x = userX ?? baseX;
+    const y = userY ?? baseY + cursor * 32;
     if (t.y === undefined) cursor++;
     skeleton.push({
       type: "text",
