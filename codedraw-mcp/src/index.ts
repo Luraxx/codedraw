@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ListResourceTemplatesRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const API_URL = (process.env.CODEDRAW_API_URL ?? "http://localhost:3010").replace(/\/$/, "");
 const PORT = Number(process.env.PORT ?? 3000);
@@ -369,6 +370,26 @@ const createServer = (baseUrl: string): McpServer => {
       ],
     }),
   );
+
+  // Mirror the widget into resources/templates/list — OpenAI's pizzaz reference
+  // server registers the widget URI in BOTH resources/list AND
+  // resources/templates/list. ChatGPT discovers the outputTemplate via the
+  // templates list, so an empty list causes "Failed to fetch template".
+  server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+    resourceTemplates: [
+      {
+        uriTemplate: WIDGET_URI,
+        name: "codedraw-preview",
+        description: "CodeDraw preview widget markup",
+        mimeType: "text/html+skybridge",
+        _meta: {
+          "openai/widgetAccessible": true,
+          "openai/toolInvocation/invoking": "Rendering diagram",
+          "openai/toolInvocation/invoked": "Diagram ready",
+        },
+      },
+    ],
+  }));
 
   // ────────────────────────────────────────────────────────────
   // render_diagram
