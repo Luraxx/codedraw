@@ -590,6 +590,60 @@ export const buildScene = (
         } else {
           start = clipToShape(fromBox, tcx, tcy, STROKE_GAP);
           end = clipToShape(toBox, fcx, fcy, STROKE_GAP);
+          // Even outside auto-layout, if the straight segment cuts
+          // through any unrelated node, try an L-shape detour
+          // (horizontal-then-vertical or vertical-then-horizontal)
+          // and keep the variant that avoids the most boxes.
+          const countCrossings = (
+            pts: { x: number; y: number }[],
+          ): number => {
+            let n = 0;
+            for (let i = 0; i < pts.length - 1; i++) {
+              for (const [id, b] of boxes) {
+                if (id === e.from || id === e.to) continue;
+                if (
+                  segmentCrossesBox(
+                    pts[i].x,
+                    pts[i].y,
+                    pts[i + 1].x,
+                    pts[i + 1].y,
+                    b,
+                  )
+                ) {
+                  n++;
+                }
+              }
+            }
+            return n;
+          };
+          const direct = countCrossings([start, end]);
+          if (direct > 0) {
+            // Pick perpendicular anchors so the L-shape doesn't fold
+            // back on itself near the source / target.
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const hvStart =
+              Math.abs(dx) > Math.abs(dy)
+                ? sideAnchor(fromBox, dx >= 0 ? "right" : "left")
+                : sideAnchor(fromBox, dy >= 0 ? "bottom" : "top");
+            const hvEnd =
+              Math.abs(dx) > Math.abs(dy)
+                ? sideAnchor(toBox, dy >= 0 ? "top" : "bottom")
+                : sideAnchor(toBox, dx >= 0 ? "left" : "right");
+            const hvMid = { x: hvEnd.x, y: hvStart.y };
+            const vhMid = { x: hvStart.x, y: hvEnd.y };
+            const hv = [hvStart, hvMid, hvEnd];
+            const vh = [hvStart, vhMid, hvEnd];
+            const hvCross = countCrossings(hv);
+            const vhCross = countCrossings(vh);
+            const best = Math.min(hvCross, vhCross);
+            if (best < direct) {
+              const chosen = hvCross <= vhCross ? hv : vh;
+              start = chosen[0];
+              end = chosen[chosen.length - 1];
+              waypoints = chosen.slice(1, -1);
+            }
+          }
         }
       }
       const sx = start.x;
