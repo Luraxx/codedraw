@@ -457,7 +457,7 @@ const createServer = (baseUrl: string): McpServer => {
               text: `Downloads (valid ${downloads.ttlSeconds}s):\nSVG: ${downloads.svgUrl}\nPNG: ${downloads.pngUrl}`,
             },
           ],
-          structuredContent: { format: "svg", ...dims, svg, pngBase64, downloads },
+          structuredContent: { format: "svg", ...dims, svg, downloads },
         };
       }
 
@@ -471,7 +471,7 @@ const createServer = (baseUrl: string): McpServer => {
             text: `Downloads (valid ${downloads.ttlSeconds}s):\nSVG: ${downloads.svgUrl}\nPNG: ${downloads.pngUrl}`,
           },
         ],
-        structuredContent: { format: "png", ...dims, svg, pngBase64, downloads },
+        structuredContent: { format: "png", ...dims, pngBase64, downloads },
       };
     },
   );
