@@ -138,7 +138,7 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
 // endpoint (GET /widget). ChatGPT fetches openai/outputTemplate via HTTP
 // GET; the ui:// MCP resource scheme stopped working as of mid-2026.
 // ────────────────────────────────────────────────────────────
-const WIDGET_URI = "ui://widget/codedraw-preview-v6.html";
+const WIDGET_URI = "ui://widget/codedraw-preview-v7.html";
 const WIDGET_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -296,30 +296,73 @@ const WIDGET_HTML = `<!doctype html>
     if(merged.format || merged.svg || merged.pngBase64) render(merged);
   }
 
-  try {
-    if(typeof window !== "undefined" && window.openai){
-      var w = window.openai;
-      var merged = {};
+  var rendered = false;
+
+  function tryRenderFromGlobals(){
+    if(rendered) return true;
+    try {
+      var w = (typeof window !== "undefined") ? window.openai : null;
+      if(!w) return false;
       var sc = w.toolOutput || {};
       var meta = w.toolResponseMetadata || w._meta || {};
+      var merged = {};
       for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
       for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
-      if(merged.format || merged.svg || merged.pngBase64) render(merged);
+      if(merged.format || merged.svg || merged.pngBase64){
+        render(merged);
+        rendered = true;
+        return true;
+      }
+    } catch(_){}
+    return false;
+  }
+
+  // Initial attempt (fast path when globals are already populated, e.g. on
+  // page reload where ChatGPT replays the tool result before our script runs).
+  tryRenderFromGlobals();
+
+  // Slow path: window.openai is typically populated AFTER the first script
+  // turn during the bridge handshake. Poll briefly until it appears.
+  if(!rendered){
+    var tries = 0;
+    var iv = setInterval(function(){
+      if(tryRenderFromGlobals() || ++tries > 80){ clearInterval(iv); }
+    }, 75);
+    // Also retry after DOMContentLoaded and full load for good measure.
+    if(document.readyState !== "complete"){
+      document.addEventListener("DOMContentLoaded", tryRenderFromGlobals, { once: true });
+      window.addEventListener("load", tryRenderFromGlobals, { once: true });
     }
-  } catch(_){}
+  }
 
   window.addEventListener("message", function(event){
     if(event.source !== window.parent) return;
     var msg = event.data;
     if(!msg || msg.jsonrpc !== "2.0") return;
     if(msg.method === "ui/notifications/tool-result"){
+      rendered = true;
       fromToolResult(msg.params);
     }
   }, { passive: true });
 
+  // ChatGPT fires this event whenever window.openai globals are mutated.
   window.addEventListener("openai:set_globals", function(event){
-    var globals = event && event.detail && event.detail.globals;
-    if(globals && globals.toolOutput) render(globals.toolOutput);
+    var globals = (event && event.detail && event.detail.globals) || null;
+    if(globals && globals.toolOutput){
+      // Merge with current _meta if present.
+      var merged = {};
+      var sc = globals.toolOutput || {};
+      var meta = globals.toolResponseMetadata || (window.openai && window.openai.toolResponseMetadata) || {};
+      for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
+      for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
+      if(merged.format || merged.svg || merged.pngBase64){
+        rendered = true;
+        render(merged);
+      }
+    } else {
+      // Fallback: re-read globals lazily.
+      tryRenderFromGlobals();
+    }
   }, { passive: true });
 })();
 </script>
