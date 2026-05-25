@@ -138,7 +138,7 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
 // endpoint (GET /widget). ChatGPT fetches openai/outputTemplate via HTTP
 // GET; the ui:// MCP resource scheme stopped working as of mid-2026.
 // ────────────────────────────────────────────────────────────
-const WIDGET_URI = "ui://widget/codedraw-preview-v5.html";
+const WIDGET_URI = "ui://widget/codedraw-preview-v6.html";
 const WIDGET_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -348,7 +348,7 @@ const createServer = (baseUrl: string): McpServer => {
     {
       title: "CodeDraw preview",
       description: "Inline iframe widget that renders the SVG / PNG / JSON returned by render_diagram.",
-      mimeType: "text/html+skybridge",
+      mimeType: "text/html;profile=mcp-app",
       _meta: {
         "openai/widgetAccessible": true,
         "openai/toolInvocation/invoking": "Rendering diagram",
@@ -359,7 +359,7 @@ const createServer = (baseUrl: string): McpServer => {
       contents: [
         {
           uri: uri.href,
-          mimeType: "text/html+skybridge",
+          mimeType: "text/html;profile=mcp-app",
           text: WIDGET_HTML,
           _meta: {
             "openai/widgetAccessible": true,
@@ -381,7 +381,7 @@ const createServer = (baseUrl: string): McpServer => {
         uriTemplate: WIDGET_URI,
         name: "codedraw-preview",
         description: "CodeDraw preview widget markup",
-        mimeType: "text/html+skybridge",
+        mimeType: "text/html;profile=mcp-app",
         _meta: {
           "openai/widgetAccessible": true,
           "openai/toolInvocation/invoking": "Rendering diagram",
@@ -414,6 +414,8 @@ const createServer = (baseUrl: string): McpServer => {
         "openai/widgetAccessible": true,
         "openai/toolInvocation/invoking": "Rendering diagram",
         "openai/toolInvocation/invoked": "Diagram ready",
+        "ui/resourceUri": WIDGET_URI,
+        ui: { resourceUri: WIDGET_URI },
       },
       annotations: {
         readOnlyHint: true,
@@ -463,6 +465,7 @@ const createServer = (baseUrl: string): McpServer => {
         return {
           content: [{ type: "text", text }],
           structuredContent: { format: "json", scene: parsed },
+          _meta: { "ui/resourceUri": WIDGET_URI, ui: { resourceUri: WIDGET_URI } },
         };
       }
 
@@ -503,7 +506,7 @@ const createServer = (baseUrl: string): McpServer => {
           // Keep structuredContent SMALL — it's sent to the model. The widget
           // gets the full payload via _meta over the MCP Apps UI bridge.
           structuredContent: { format: "svg", ...dims, downloads },
-          _meta: { svg, pngBase64, downloads },
+          _meta: { svg, pngBase64, downloads, "ui/resourceUri": WIDGET_URI, ui: { resourceUri: WIDGET_URI } },
         };
       }
 
@@ -518,7 +521,7 @@ const createServer = (baseUrl: string): McpServer => {
           },
         ],
         structuredContent: { format: "png", ...dims, downloads },
-        _meta: { svg, pngBase64, downloads },
+        _meta: { svg, pngBase64, downloads, "ui/resourceUri": WIDGET_URI, ui: { resourceUri: WIDGET_URI } },
       };
     },
   );
@@ -775,7 +778,7 @@ app.get("/mcp/downloads/png/:id", (req, res) => serveDownload("png", req, res));
 // at both root and /mcp/ prefix to handle Coolify's path-based routing.
 // ────────────────────────────────────────────────────────────
 const serveWidget = (_req: Request, res: ExpressResponse): void => {
-  res.setHeader("Content-Type", "text/html+skybridge");
+  res.setHeader("Content-Type", "text/html;profile=mcp-app");
   res.setHeader("Cache-Control", "public, max-age=3600");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.status(200).send(WIDGET_HTML);
