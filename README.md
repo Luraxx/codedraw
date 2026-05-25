@@ -1,7 +1,7 @@
 # CodeDraw
 
 > **Code in — diagram out.**  
-> Write a tiny DSL, get a beautiful Excalidraw-quality diagram back as PNG, SVG or JSON — directly from your editor, a shell script, or an AI agent.
+> A fork of [Excalidraw](https://github.com/excalidraw/excalidraw) — write a tiny DSL, get a beautiful hand-drawn-style diagram back as PNG, SVG or JSON — directly from your editor, a shell script, or an AI agent.
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-codedraw.dehlwes.net-4263eb?style=flat-square&logo=globe&logoColor=white)](https://codedraw.dehlwes.net)
 [![Render API](https://img.shields.io/badge/API-POST_%2Fapi%2Frender-51cf66?style=flat-square&logo=fastify&logoColor=white)](https://codedraw.dehlwes.net/api)
