@@ -285,13 +285,25 @@ const WIDGET_HTML = `<!doctype html>
 
   function fromToolResult(params){
     if(!params) return;
-    var sc = params.structuredContent || params.toolOutput;
-    if(sc) render(sc);
+    var sc = params.structuredContent || params.toolOutput || {};
+    var meta = params._meta || {};
+    // Merge: structuredContent stays small (sent to model); _meta carries
+    // the heavy svg / pngBase64 payloads exclusively for the widget.
+    var merged = {};
+    for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
+    for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
+    if(merged.format || merged.svg || merged.pngBase64) render(merged);
   }
 
   try {
-    if(typeof window !== "undefined" && window.openai && window.openai.toolOutput){
-      render(window.openai.toolOutput);
+    if(typeof window !== "undefined" && window.openai){
+      var w = window.openai;
+      var merged = {};
+      var sc = w.toolOutput || {};
+      var meta = w.toolResponseMetadata || w._meta || {};
+      for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
+      for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
+      if(merged.format || merged.svg || merged.pngBase64) render(merged);
     }
   } catch(_){}
 
@@ -367,9 +379,10 @@ const createServer = (baseUrl: string): McpServer => {
         "Call get_grammar for the full reference, get_examples for ready-made snippets. " +
         "Default format is SVG (text, embeddable). Use format=png to receive a PNG image content block.",
       _meta: {
-        // ChatGPT Apps SDK — point to the real HTTPS GET endpoint so
-        // ChatGPT can fetch the template without going through MCP resources/read.
-        "openai/outputTemplate": WIDGET_HTTP_URL,
+        // ChatGPT Apps SDK — MUST be a ui:// resource URI. ChatGPT loads it
+        // via MCP resources/read, NOT via HTTP. Using an https:// URL here
+        // makes ChatGPT fail with "Failed to fetch template".
+        "openai/outputTemplate": WIDGET_URI,
         ui: { resourceUri: WIDGET_URI },
       },
       annotations: {
@@ -457,7 +470,10 @@ const createServer = (baseUrl: string): McpServer => {
               text: `Downloads (valid ${downloads.ttlSeconds}s):\nSVG: ${downloads.svgUrl}\nPNG: ${downloads.pngUrl}`,
             },
           ],
-          structuredContent: { format: "svg", ...dims, svg, downloads },
+          // Keep structuredContent SMALL — it's sent to the model. The widget
+          // gets the full payload via _meta over the MCP Apps UI bridge.
+          structuredContent: { format: "svg", ...dims, downloads },
+          _meta: { svg, pngBase64, downloads },
         };
       }
 
@@ -471,7 +487,8 @@ const createServer = (baseUrl: string): McpServer => {
             text: `Downloads (valid ${downloads.ttlSeconds}s):\nSVG: ${downloads.svgUrl}\nPNG: ${downloads.pngUrl}`,
           },
         ],
-        structuredContent: { format: "png", ...dims, pngBase64, downloads },
+        structuredContent: { format: "png", ...dims, downloads },
+        _meta: { svg, pngBase64, downloads },
       };
     },
   );
