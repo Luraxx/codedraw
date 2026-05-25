@@ -348,8 +348,15 @@ const createServer = (baseUrl: string): McpServer => {
     {
       title: "Render CodeDraw diagram",
       description:
-        "Render a CodeDraw DSL diagram. Use this whenever the user asks to draw, render, create, preview, sketch or export a diagram, flowchart, state machine, ER diagram, architecture sketch or any other visual graph. " +
-        "Input is the CodeDraw DSL source code (see get_grammar for the full reference and get_examples for ready-made snippets). " +
+        "Render a CodeDraw DSL diagram. Use this whenever the user asks to draw, render, create, preview, sketch or export a diagram, flowchart, state machine, ER diagram, architecture sketch or any other visual graph.\n\n" +
+        "DSL quick-reference (all styling options are supported):\n" +
+        "  node id { label: \"text\"  shape: rectangle|ellipse|diamond  fill: #hex  stroke: #hex  strokeWidth: 1|2|4  strokeStyle: solid|dashed|dotted  roughness: 0|1|2  at: x,y  size: w,h }\n" +
+        "  edge a -> b { label: \"text\"  color: #hex  width: 1|2|4  style: solid|dashed|dotted  startHead: none|arrow|triangle|bar|dot  endHead: none|arrow|triangle|bar|dot  roughness: 0|1|2 }\n" +
+        "  edge a ~> b { ... fromSide: top|right|bottom|left  toSide: top|right|bottom|left }   # elbow (90° routed)\n" +
+        "  edge a -- b { ... }   # line, no arrowhead\n" +
+        "  arrow { from: x,y  to: x,y  color: #hex  style: dashed  ... }   # free unbound arrow\n" +
+        "  text  { content: \"...\"  at: x,y  size: 20 }\n\n" +
+        "Call get_grammar for the full reference, get_examples for ready-made snippets. " +
         "Default format is SVG (text, embeddable). Use format=png to receive a PNG image content block.",
       _meta: {
         // ChatGPT Apps SDK — bind this tool's output to the preview widget.
