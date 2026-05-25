@@ -137,7 +137,7 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
 // endpoint (GET /widget). ChatGPT fetches openai/outputTemplate via HTTP
 // GET; the ui:// MCP resource scheme stopped working as of mid-2026.
 // ────────────────────────────────────────────────────────────
-const WIDGET_URI = "ui://widget/codedraw-preview-v4.html";
+const WIDGET_URI = "ui://widget/codedraw-preview-v5.html";
 const WIDGET_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -347,30 +347,23 @@ const createServer = (baseUrl: string): McpServer => {
     {
       title: "CodeDraw preview",
       description: "Inline iframe widget that renders the SVG / PNG / JSON returned by render_diagram.",
-      mimeType: "text/html;profile=mcp-app",
+      mimeType: "text/html+skybridge",
+      _meta: {
+        "openai/widgetAccessible": true,
+        "openai/toolInvocation/invoking": "Rendering diagram",
+        "openai/toolInvocation/invoked": "Diagram ready",
+      },
     },
     async (uri) => ({
       contents: [
         {
           uri: uri.href,
-          mimeType: "text/html;profile=mcp-app",
+          mimeType: "text/html+skybridge",
           text: WIDGET_HTML,
           _meta: {
-            // Required by ChatGPT Apps SDK — without this the sandbox
-            // rejects the template with "Failed to fetch template".
-            "openai/widgetDescription":
-              "Inline preview of the rendered CodeDraw diagram with download buttons for SVG and PNG.",
-            ui: {
-              prefersBorder: true,
-              domain: "https://codedraw.dehlwes.net",
-              csp: {
-                connectDomains: ["https://codedraw.dehlwes.net"],
-                resourceDomains: [
-                  "https://codedraw.dehlwes.net",
-                  "https://*.oaistatic.com",
-                ],
-              },
-            },
+            "openai/widgetAccessible": true,
+            "openai/toolInvocation/invoking": "Rendering diagram",
+            "openai/toolInvocation/invoked": "Diagram ready",
           },
         },
       ],
@@ -396,11 +389,10 @@ const createServer = (baseUrl: string): McpServer => {
         "Call get_grammar for the full reference, get_examples for ready-made snippets. " +
         "Default format is SVG (text, embeddable). Use format=png to receive a PNG image content block.",
       _meta: {
-        // ChatGPT Apps SDK — MUST be a ui:// resource URI. ChatGPT loads it
-        // via MCP resources/read, NOT via HTTP. Using an https:// URL here
-        // makes ChatGPT fail with "Failed to fetch template".
         "openai/outputTemplate": WIDGET_URI,
-        ui: { resourceUri: WIDGET_URI },
+        "openai/widgetAccessible": true,
+        "openai/toolInvocation/invoking": "Rendering diagram",
+        "openai/toolInvocation/invoked": "Diagram ready",
       },
       annotations: {
         readOnlyHint: true,
@@ -762,7 +754,7 @@ app.get("/mcp/downloads/png/:id", (req, res) => serveDownload("png", req, res));
 // at both root and /mcp/ prefix to handle Coolify's path-based routing.
 // ────────────────────────────────────────────────────────────
 const serveWidget = (_req: Request, res: ExpressResponse): void => {
-  res.setHeader("Content-Type", "text/html;profile=mcp-app");
+  res.setHeader("Content-Type", "text/html+skybridge");
   res.setHeader("Cache-Control", "public, max-age=3600");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.status(200).send(WIDGET_HTML);
