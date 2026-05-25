@@ -134,9 +134,9 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
 // ────────────────────────────────────────────────────────────
 // ChatGPT Apps SDK UI widget HTML
 //
-// Defined at module level so it can be served at a plain HTTP GET
-// endpoint (GET /widget). ChatGPT fetches openai/outputTemplate via HTTP
-// GET; the ui:// MCP resource scheme stopped working as of mid-2026.
+// Served as an MCP resource at WIDGET_URI. ChatGPT (and other Apps SDK
+// hosts) load it via resources/read against the ui:// URI returned by
+// the tool's openai/outputTemplate _meta key.
 // ────────────────────────────────────────────────────────────
 const WIDGET_URI = "ui://widget/codedraw-preview-v7.html";
 const WIDGET_HTML = `<!doctype html>
@@ -328,11 +328,6 @@ const WIDGET_HTML = `<!doctype html>
     var iv = setInterval(function(){
       if(tryRenderFromGlobals() || ++tries > 80){ clearInterval(iv); }
     }, 75);
-    // Also retry after DOMContentLoaded and full load for good measure.
-    if(document.readyState !== "complete"){
-      document.addEventListener("DOMContentLoaded", tryRenderFromGlobals, { once: true });
-      window.addEventListener("load", tryRenderFromGlobals, { once: true });
-    }
   }
 
   window.addEventListener("message", function(event){
@@ -376,15 +371,8 @@ const createServer = (baseUrl: string): McpServer => {
   });
 
   // ────────────────────────────────────────────────────────────
-  // ChatGPT Apps SDK UI widget
-  //
-  // openai/outputTemplate now points to a real HTTPS GET endpoint
-  // (GET /widget) so ChatGPT can fetch it directly via HTTP.
-  // The ui:// MCP resource is kept for backward compat with other
-  // MCP clients that use resources/read.
+  // ChatGPT Apps SDK UI widget — registered as an MCP resource.
   // ────────────────────────────────────────────────────────────
-  const WIDGET_HTTP_URL = `${baseUrl}/widget`;
-
   server.registerResource(
     "codedraw-preview",
     WIDGET_URI,
@@ -813,21 +801,6 @@ app.get("/downloads/svg/:id", (req, res) => serveDownload("svg", req, res));
 app.get("/downloads/png/:id", (req, res) => serveDownload("png", req, res));
 app.get("/mcp/downloads/svg/:id", (req, res) => serveDownload("svg", req, res));
 app.get("/mcp/downloads/png/:id", (req, res) => serveDownload("png", req, res));
-
-// ────────────────────────────────────────────────────────────
-// Widget endpoint
-//
-// ChatGPT fetches openai/outputTemplate via HTTP GET. Serve the same HTML
-// at both root and /mcp/ prefix to handle Coolify's path-based routing.
-// ────────────────────────────────────────────────────────────
-const serveWidget = (_req: Request, res: ExpressResponse): void => {
-  res.setHeader("Content-Type", "text/html;profile=mcp-app");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.status(200).send(WIDGET_HTML);
-};
-app.get("/widget", serveWidget);
-app.get("/mcp/widget", serveWidget);
 
 app.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
