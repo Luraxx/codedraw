@@ -137,7 +137,7 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
 // endpoint (GET /widget). ChatGPT fetches openai/outputTemplate via HTTP
 // GET; the ui:// MCP resource scheme stopped working as of mid-2026.
 // ────────────────────────────────────────────────────────────
-const WIDGET_URI = "ui://widget/codedraw-preview-v3.html";
+const WIDGET_URI = "ui://widget/codedraw-preview-v4.html";
 const WIDGET_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -355,6 +355,23 @@ const createServer = (baseUrl: string): McpServer => {
           uri: uri.href,
           mimeType: "text/html;profile=mcp-app",
           text: WIDGET_HTML,
+          _meta: {
+            // Required by ChatGPT Apps SDK — without this the sandbox
+            // rejects the template with "Failed to fetch template".
+            "openai/widgetDescription":
+              "Inline preview of the rendered CodeDraw diagram with download buttons for SVG and PNG.",
+            ui: {
+              prefersBorder: true,
+              domain: "https://codedraw.dehlwes.net",
+              csp: {
+                connectDomains: ["https://codedraw.dehlwes.net"],
+                resourceDomains: [
+                  "https://codedraw.dehlwes.net",
+                  "https://*.oaistatic.com",
+                ],
+              },
+            },
+          },
         },
       ],
     }),
