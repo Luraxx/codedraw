@@ -488,7 +488,7 @@ in the API (`/validate`, `/inspect`, `/render`, `/grammar`, `/examples`).
 
 | tool | input | output |
 |------|-------|--------|
-| `render_diagram` | `{ code, format?: "svg"\|"png"\|"json", theme?, background?, scale?, padding? }` | `content` = SVG text / PNG image block / JSON text; `structuredContent` = `{ format, width, height, svg? }` for SVG, `{ format, width, height, png? }` (base64) for PNG, `{ format, scene }` for JSON. In ChatGPT Developer-Mode the result renders as an inline visual preview via the MCP Apps SDK widget. |
+| `render_diagram` | `{ code, format?: "svg"\|"png"\|"json", theme?, background?, scale?, padding? }` | `content` = SVG text / PNG image block / JSON text plus a text block listing the download URLs; `structuredContent` = `{ format, width, height, svg, pngBase64, downloads: { svgUrl, pngUrl, ttlSeconds } }` for `svg`/`png` (both bitmaps are always rendered so either link works regardless of the requested format), `{ format, scene }` for `json`. The `downloads.{svgUrl,pngUrl}` are HTTPS URLs served by the MCP server with `Content-Disposition: attachment` and a ~30 min TTL — the recommended way to give a user a "save as" link. In ChatGPT Developer-Mode the result renders as an inline visual preview via the MCP Apps SDK widget, which also exposes "Download SVG", "Download PNG" and "Copy SVG" buttons. |
 | `validate_diagram` | `{ code }` | `{ valid, errors }` — parser-only, fast feedback loop |
 | `inspect_diagram` | `{ code }` | Full `/inspect` payload (diagramType, counts, nodes, edges, warnings) |
 | `get_grammar` | — | Plain-text DSL grammar reference |

@@ -9,7 +9,8 @@
 // All actual rendering / parsing is delegated to the existing codedraw-api
 // via fetch — this server holds no DSL logic of its own.
 
-import express, { type Request } from "express";
+import express, { type Request, type Response as ExpressResponse } from "express";
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -18,6 +19,80 @@ const API_URL = (process.env.CODEDRAW_API_URL ?? "http://localhost:3010").replac
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const SERVER_VERSION = process.env.npm_package_version ?? "0.1.0";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+
+// ────────────────────────────────────────────────────────────
+// Ephemeral download store
+//
+// render_diagram stashes the rendered SVG and PNG bytes here under a random
+// id; clients (widgets, browsers, agents) can then fetch them via
+// GET /downloads/{svg,png}/:id within the TTL window. Entries are dropped
+// after first 410 to keep the surface predictable.
+//
+// Rationale: MCP image content blocks are unreliable for actual downloads
+// across hosts; a plain HTTPS URL with the right Content-Type and
+// Content-Disposition is the most portable way to give the user a
+// "save as" experience.
+// ────────────────────────────────────────────────────────────
+type Blob = {
+  mime: string;
+  filename: string;
+  data: Buffer;
+  expiresAt: number;
+};
+const DOWNLOAD_TTL_MS = 30 * 60 * 1000;
+const downloadStore = new Map<string, Blob>();
+
+const newDownloadId = (): string => randomBytes(16).toString("hex");
+
+const storeDownload = (kind: "svg" | "png", data: Buffer): string => {
+  const id = newDownloadId();
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  downloadStore.set(id, {
+    mime: kind === "svg" ? "image/svg+xml" : "image/png",
+    filename: `codedraw-${stamp}.${kind}`,
+    data,
+    expiresAt: Date.now() + DOWNLOAD_TTL_MS,
+  });
+  return id;
+};
+
+// Periodic sweep — runs every 5 min, kept unref'd so it never blocks shutdown.
+const sweepDownloads = (): void => {
+  const now = Date.now();
+  for (const [id, blob] of downloadStore) {
+    if (blob.expiresAt <= now) downloadStore.delete(id);
+  }
+};
+setInterval(sweepDownloads, 5 * 60 * 1000).unref();
+
+// Best-effort base URL for download links. We honour, in order:
+//   1. PUBLIC_BASE_URL env var (set in production to https://...)
+//   2. X-Forwarded-Proto + X-Forwarded-Host (nginx / Coolify)
+//   3. Host header
+const baseUrlFromRequest = (req: Request): string => {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const fwdProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
+  const fwdHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
+  const proto = fwdProto || (req.socket && (req.socket as { encrypted?: boolean }).encrypted ? "https" : "http");
+  const host = fwdHost || req.headers.host || `${HOST}:${PORT}`;
+  return `${proto}://${host}`;
+};
+
+// SVG sanitizer — strips potentially-unsafe / heavy nodes so the widget can
+// embed the markup directly and the download is portable across viewers.
+//   - <script> tags and on* attributes (defence in depth — codedraw never
+//     emits these, but be conservative for third-party tooling).
+//   - <foreignObject> (browser-dependent, breaks rasterisers).
+//   - <metadata> blocks (often huge with embedded RDF / authoring tools).
+const sanitizeSvg = (svg: string): string => {
+  return svg
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<foreignObject\b[\s\S]*?<\/foreignObject\s*>/gi, "")
+    .replace(/<metadata\b[\s\S]*?<\/metadata\s*>/gi, "")
+    .replace(/\son[a-z]+="[^"]*"/gi, "")
+    .replace(/\son[a-z]+='[^']*'/gi, "");
+};
 
 // Tiny helper around fetch that throws on non-2xx with the response body.
 const apiFetch = async (path: string, init?: RequestInit): Promise<Response> => {
@@ -55,7 +130,7 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 };
 
-const createServer = (): McpServer => {
+const createServer = (baseUrl: string): McpServer => {
   const server = new McpServer({
     name: "codedraw",
     version: SERVER_VERSION,
@@ -70,7 +145,7 @@ const createServer = (): McpServer => {
   // tool result from window.openai.toolOutput (provided by the host) and
   // inlines the SVG into the document.
   // ────────────────────────────────────────────────────────────
-  const WIDGET_URI = "ui://widget/codedraw-preview-v2.html";
+  const WIDGET_URI = "ui://widget/codedraw-preview-v3.html";
   const WIDGET_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -78,54 +153,156 @@ const createServer = (): McpServer => {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>CodeDraw preview</title>
 <style>
-  html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1e1e1e}
-  #root{display:flex;align-items:center;justify-content:center;min-height:240px;padding:12px;box-sizing:border-box}
-  #root>svg{max-width:100%;height:auto;display:block}
-  #root>img{max-width:100%;height:auto;display:block}
-  #empty{font-size:13px;color:#777}
-  pre{white-space:pre-wrap;font-size:11px;margin:0}
-  @media (prefers-color-scheme: dark){body{color:#e6e6e6}#empty{color:#999}}
+  :root{
+    --fg:#1e1e1e; --muted:#666; --bg:transparent;
+    --btn-bg:#f1f3f5; --btn-fg:#1e1e1e; --btn-border:#dee2e6;
+    --btn-hover:#e9ecef; --btn-ok:#37b24d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --fg:#e6e6e6; --muted:#999;
+           --btn-bg:#2b2f33; --btn-fg:#e6e6e6; --btn-border:#3a3f44;
+           --btn-hover:#3a3f44; --btn-ok:#69db7c; }
+  }
+  html,body{margin:0;padding:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--fg)}
+  #wrap{display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box}
+  #preview{display:flex;align-items:center;justify-content:center;min-height:180px;border-radius:6px}
+  #preview img{max-width:100%;height:auto;display:block}
+  #preview pre{white-space:pre-wrap;font-size:11px;margin:0;width:100%;max-height:340px;overflow:auto}
+  #empty{font-size:13px;color:var(--muted);padding:24px}
+  #bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
+  #bar .spacer{flex:1}
+  button, a.btn{
+    appearance:none;border:1px solid var(--btn-border);background:var(--btn-bg);color:var(--btn-fg);
+    padding:5px 10px;border-radius:5px;font-size:12px;cursor:pointer;text-decoration:none;line-height:1.2;
+  }
+  button:hover, a.btn:hover{background:var(--btn-hover)}
+  button.copied{color:var(--btn-ok);border-color:var(--btn-ok)}
 </style>
 </head>
 <body>
-<div id="root"><div id="empty">No diagram yet.</div></div>
+<div id="wrap">
+  <div id="preview"><div id="empty">No diagram yet.</div></div>
+  <div id="bar" hidden>
+    <span id="dims"></span>
+    <span class="spacer"></span>
+    <a class="btn" id="dlSvg" hidden>Download SVG</a>
+    <a class="btn" id="dlPng" hidden>Download PNG</a>
+    <button id="copySvg" hidden>Copy SVG</button>
+  </div>
+</div>
 <script>
 (function(){
-  var root = document.getElementById("root");
+  var preview = document.getElementById("preview");
+  var bar     = document.getElementById("bar");
+  var dimsEl  = document.getElementById("dims");
+  var dlSvg   = document.getElementById("dlSvg");
+  var dlPng   = document.getElementById("dlPng");
+  var copyBtn = document.getElementById("copySvg");
+  var lastSvg = null;
+  var lastBlobUrl = null;
+
+  function makeSvgUrl(svg){
+    if(lastBlobUrl){ try { URL.revokeObjectURL(lastBlobUrl); } catch(_){} }
+    var blob = new Blob([svg], { type: "image/svg+xml" });
+    lastBlobUrl = URL.createObjectURL(blob);
+    return lastBlobUrl;
+  }
+
+  function setDims(out){
+    if(out && out.width && out.height){
+      dimsEl.textContent = Math.round(out.width) + " × " + Math.round(out.height) + " px";
+    } else {
+      dimsEl.textContent = "";
+    }
+  }
+
+  function setDownloads(out){
+    var dls = (out && out.downloads) || {};
+    if(dls.svgUrl){ dlSvg.href = dls.svgUrl; dlSvg.hidden = false; dlSvg.setAttribute("download",""); dlSvg.target="_blank"; dlSvg.rel="noopener"; }
+    else { dlSvg.hidden = true; }
+    if(dls.pngUrl){ dlPng.href = dls.pngUrl; dlPng.hidden = false; dlPng.setAttribute("download",""); dlPng.target="_blank"; dlPng.rel="noopener"; }
+    else { dlPng.hidden = true; }
+    copyBtn.hidden = !lastSvg;
+    bar.hidden = (dlSvg.hidden && dlPng.hidden && copyBtn.hidden && !dimsEl.textContent);
+  }
+
+  function renderSvg(svgText, out){
+    lastSvg = svgText;
+    var url = makeSvgUrl(svgText);
+    var img = document.createElement("img");
+    img.alt = "CodeDraw diagram";
+    img.src = url;
+    preview.innerHTML = "";
+    preview.appendChild(img);
+    setDims(out);
+    setDownloads(out);
+  }
+
+  function renderPng(b64, out){
+    lastSvg = null;
+    var img = document.createElement("img");
+    img.alt = "CodeDraw diagram";
+    img.src = "data:image/png;base64," + b64;
+    if(out && out.width)  img.width  = out.width;
+    if(out && out.height) img.height = out.height;
+    preview.innerHTML = "";
+    preview.appendChild(img);
+    setDims(out);
+    setDownloads(out);
+  }
+
+  function renderJson(out){
+    lastSvg = null;
+    var pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(out && out.scene, null, 2);
+    preview.innerHTML = "";
+    preview.appendChild(pre);
+    setDims(out);
+    setDownloads(out);
+  }
+
   function render(out){
     if(!out) return;
-    if(out.format === "svg" && typeof out.svg === "string"){
-      root.innerHTML = out.svg;
+    // Prefer SVG payload whenever present — even for format=png we may have
+    // both, and SVG is sharper / scriptable for the widget surface.
+    if(typeof out.svg === "string" && out.svg.length){
+      renderSvg(out.svg, out);
       return;
     }
-    if(out.format === "png" && typeof out.png === "string"){
-      root.innerHTML = "";
-      var img = document.createElement("img");
-      img.src = "data:image/png;base64," + out.png;
-      if(out.width) img.width = out.width;
-      if(out.height) img.height = out.height;
-      root.appendChild(img);
+    if((out.format === "png") && typeof (out.pngBase64 || out.png) === "string"){
+      renderPng(out.pngBase64 || out.png, out);
       return;
     }
     if(out.format === "json"){
-      root.innerHTML = "";
-      var pre = document.createElement("pre");
-      pre.textContent = JSON.stringify(out.scene, null, 2);
-      root.appendChild(pre);
+      renderJson(out);
+      return;
     }
   }
+
+  copyBtn.addEventListener("click", function(){
+    if(!lastSvg || !navigator.clipboard) return;
+    navigator.clipboard.writeText(lastSvg).then(function(){
+      copyBtn.textContent = "Copied";
+      copyBtn.classList.add("copied");
+      setTimeout(function(){
+        copyBtn.textContent = "Copy SVG";
+        copyBtn.classList.remove("copied");
+      }, 1500);
+    }).catch(function(){});
+  });
+
   function fromToolResult(params){
     if(!params) return;
     var sc = params.structuredContent || params.toolOutput;
     if(sc) render(sc);
   }
-  // 1. Initial value from window.openai (Apps SDK compatibility layer)
+
   try {
     if(typeof window !== "undefined" && window.openai && window.openai.toolOutput){
       render(window.openai.toolOutput);
     }
   } catch(_){}
-  // 2. MCP Apps bridge — JSON-RPC tool-result notifications over postMessage
+
   window.addEventListener("message", function(event){
     if(event.source !== window.parent) return;
     var msg = event.data;
@@ -134,7 +311,7 @@ const createServer = (): McpServer => {
       fromToolResult(msg.params);
     }
   }, { passive: true });
-  // 3. ChatGPT Apps SDK — openai:set_globals custom event
+
   window.addEventListener("openai:set_globals", function(event){
     var globals = event && event.detail && event.detail.globals;
     if(globals && globals.toolOutput) render(globals.toolOutput);
@@ -200,27 +377,28 @@ const createServer = (): McpServer => {
         width: z.number().optional(),
         height: z.number().optional(),
         svg: z.string().optional(),
-        png: z.string().optional().describe("base64-encoded PNG (no data: prefix)"),
+        pngBase64: z
+          .string()
+          .optional()
+          .describe("base64-encoded PNG (no data: prefix)"),
         scene: z.unknown().optional(),
+        downloads: z
+          .object({
+            svgUrl: z.string().optional().describe("HTTPS URL to download the rendered SVG (valid ~30 min)"),
+            pngUrl: z.string().optional().describe("HTTPS URL to download the rendered PNG (valid ~30 min)"),
+            ttlSeconds: z.number().optional(),
+          })
+          .optional(),
       },
     },
     async ({ code, format, theme, background, scale, padding }) => {
-      const res = await apiFetch("/render", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code, format, theme, background, scale, padding }),
-      });
-
-      if (format === "svg") {
-        const svg = await res.text();
-        const dims = extractSvgDims(svg);
-        return {
-          content: [{ type: "text", text: svg }],
-          structuredContent: { format: "svg", ...dims, svg },
-        };
-      }
-
+      // JSON output is a pure data shape — no rasterisation, no downloads.
       if (format === "json") {
+        const res = await apiFetch("/render", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code, format, theme, background, scale, padding }),
+        });
         const text = await res.text();
         const parsed = JSON.parse(text);
         return {
@@ -229,21 +407,55 @@ const createServer = (): McpServer => {
         };
       }
 
-      // png — return both an MCP image content block (so other clients see
-      // the bitmap natively) and the base64 payload inside structuredContent
-      // so the Apps SDK widget can render it inside the iframe.
-      const buf = Buffer.from(await res.arrayBuffer());
-      const base64 = buf.toString("base64");
-      const dims = extractPngDims(buf);
+      // Otherwise render BOTH formats in parallel so the widget can show the
+      // preview and we can hand the user a "Download SVG" *and* "Download PNG"
+      // link regardless of which format they explicitly asked for.
+      const renderPayload = (fmt: "svg" | "png"): Promise<Response> =>
+        apiFetch("/render", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code, format: fmt, theme, background, scale, padding }),
+        });
+
+      const [svgRes, pngRes] = await Promise.all([renderPayload("svg"), renderPayload("png")]);
+      const svgRaw = await svgRes.text();
+      const svg = sanitizeSvg(svgRaw);
+      const pngBuf = Buffer.from(await pngRes.arrayBuffer());
+      const pngBase64 = pngBuf.toString("base64");
+
+      const svgId = storeDownload("svg", Buffer.from(svg, "utf8"));
+      const pngId = storeDownload("png", pngBuf);
+      const downloads = {
+        svgUrl: `${baseUrl}/downloads/svg/${svgId}`,
+        pngUrl: `${baseUrl}/downloads/png/${pngId}`,
+        ttlSeconds: Math.round(DOWNLOAD_TTL_MS / 1000),
+      };
+
+      if (format === "svg") {
+        const dims = extractSvgDims(svg);
+        return {
+          content: [
+            { type: "text", text: svg },
+            {
+              type: "text",
+              text: `Downloads (valid ${downloads.ttlSeconds}s):\nSVG: ${downloads.svgUrl}\nPNG: ${downloads.pngUrl}`,
+            },
+          ],
+          structuredContent: { format: "svg", ...dims, svg, pngBase64, downloads },
+        };
+      }
+
+      // format === "png"
+      const dims = extractPngDims(pngBuf);
       return {
         content: [
+          { type: "image", data: pngBase64, mimeType: "image/png" },
           {
-            type: "image",
-            data: base64,
-            mimeType: "image/png",
+            type: "text",
+            text: `Downloads (valid ${downloads.ttlSeconds}s):\nSVG: ${downloads.svgUrl}\nPNG: ${downloads.pngUrl}`,
           },
         ],
-        structuredContent: { format: "png", ...dims, png: base64 },
+        structuredContent: { format: "png", ...dims, svg, pngBase64, downloads },
       };
     },
   );
@@ -408,9 +620,10 @@ app.get("/", (_req, res) => {
 // MCP entry. We instantiate a fresh server + transport per request which is
 // the recommended pattern for stateless Streamable HTTP — sessionless and
 // resilient across load-balancer hops.
-const handleMcp = async (req: Request, res: Response): Promise<void> => {
+const handleMcp = async (req: Request, res: ExpressResponse): Promise<void> => {
   try {
-    const server = createServer();
+    const baseUrl = baseUrlFromRequest(req);
+    const server = createServer(baseUrl);
     const transport = new StreamableHTTPServerTransport({
       // Stateless mode: every request gets a fresh server + transport. No
       // mcp-session-id round-tripping is needed, which makes the endpoint
@@ -447,6 +660,50 @@ app.get("/mcp", (_req, res) => {
     id: null,
   });
 });
+
+// ────────────────────────────────────────────────────────────
+// Download endpoints
+//
+// render_diagram exposes `downloads.svgUrl` / `downloads.pngUrl` pointing
+// here. We register the routes twice: once at the root and once under the
+// "/mcp/" prefix so the same URL works whether the deployment is reached
+// directly (local dev) or via the production nginx location that forwards
+// "/mcp/*" to this service without rewriting the path.
+// ────────────────────────────────────────────────────────────
+const serveDownload = (
+  expectedKind: "svg" | "png",
+  req: Request,
+  res: ExpressResponse,
+): void => {
+  const id = String(req.params.id ?? "");
+  const blob = downloadStore.get(id);
+  if (!blob) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  if (blob.expiresAt <= Date.now()) {
+    downloadStore.delete(id);
+    res.status(410).json({ error: "expired" });
+    return;
+  }
+  const expectedMime = expectedKind === "svg" ? "image/svg+xml" : "image/png";
+  if (blob.mime !== expectedMime) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.setHeader("Content-Type", blob.mime);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${blob.filename}"`,
+  );
+  res.setHeader("Cache-Control", "private, max-age=60");
+  res.status(200).end(blob.data);
+};
+
+app.get("/downloads/svg/:id", (req, res) => serveDownload("svg", req, res));
+app.get("/downloads/png/:id", (req, res) => serveDownload("png", req, res));
+app.get("/mcp/downloads/svg/:id", (req, res) => serveDownload("svg", req, res));
+app.get("/mcp/downloads/png/:id", (req, res) => serveDownload("png", req, res));
 
 app.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console

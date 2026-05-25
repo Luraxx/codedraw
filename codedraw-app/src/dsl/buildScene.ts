@@ -261,7 +261,7 @@ export const buildScene = (
       height: p.h,
       strokeColor: n.strokeColor ?? "#1e1e1e",
       backgroundColor: n.backgroundColor ?? "transparent",
-      fillStyle: n.backgroundColor ? "hachure" : "solid",
+      fillStyle: "solid",
       label: { text: n.label || n.id },
     };
     if (sw !== undefined) skel.strokeWidth = sw;

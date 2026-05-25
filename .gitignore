@@ -34,3 +34,5 @@ codedraw-app/public/llms.txt
 
 # Internal infrastructure / deployment docs
 docs/
+!docs/overview.png
+!docs/overview.svg
