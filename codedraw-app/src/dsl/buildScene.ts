@@ -144,46 +144,6 @@ const clipToShape = (
   return { x: cx + dx * t, y: cy + dy * t };
 };
 
-/**
- * Returns true when the (open) segment from `(x1,y1)` to `(x2,y2)`
- * intersects the interior of `box` (slightly deflated so endpoints
- * sitting exactly on a box boundary do not count as crossings).
- */
-const segmentCrossesBox = (
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  box: NodeBox,
-): boolean => {
-  const pad = 2;
-  const minX = box.x + pad;
-  const maxX = box.x + box.w - pad;
-  const minY = box.y + pad;
-  const maxY = box.y + box.h - pad;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  let tEnter = 0;
-  let tExit = 1;
-  const clip = (p: number, q: number): boolean => {
-    if (p === 0) return q >= 0;
-    const t = q / p;
-    if (p < 0) {
-      if (t > tExit) return false;
-      if (t > tEnter) tEnter = t;
-    } else {
-      if (t < tEnter) return false;
-      if (t < tExit) tExit = t;
-    }
-    return true;
-  };
-  if (!clip(-dx, x1 - minX)) return false;
-  if (!clip(dx, maxX - x1)) return false;
-  if (!clip(-dy, y1 - minY)) return false;
-  if (!clip(dy, maxY - y1)) return false;
-  return tExit > tEnter && tEnter < 1 && tExit > 0;
-};
-
 const applyLinearStyleToSkel = (
   skel: Record<string, unknown>,
   style: ParsedLinearStyle,
@@ -228,10 +188,6 @@ export const buildScene = (
   );
 
   const boxes = new Map<string, NodeBox>();
-  // Captured by the auto-layout pass: dagre's routed waypoints for each
-  // edge that spans more than one rank. Used to detour around real nodes
-  // sitting in the same column as a long-edge endpoint.
-  const dagrePts = new Map<string, { x: number; y: number }[]>();
 
   if (needsAutoLayout && parsed.nodes.length > 0) {
     const g = new dagre.graphlib.Graph();
@@ -261,13 +217,6 @@ export const buildScene = (
         : {});
     }
     dagre.layout(g);
-    for (const e of parsed.edges) {
-      if (!g.hasNode(e.from) || !g.hasNode(e.to)) continue;
-      const ge = g.edge(e.from, e.to) as { points?: { x: number; y: number }[] } | undefined;
-      if (ge?.points && ge.points.length >= 2) {
-        dagrePts.set(`${e.from}->${e.to}`, ge.points.map((p) => ({ x: p.x, y: p.y })));
-      }
-    }
     for (const n of parsed.nodes) {
       const m = measureLabel(n.label, n.shape);
       const w = n.width ?? m.w;
@@ -327,12 +276,6 @@ export const buildScene = (
       for (const [id, b] of boxes) {
         boxes.set(id, { ...b, x: b.x + centerDx, y: b.y + centerDy });
       }
-      for (const [k, pts] of dagrePts) {
-        dagrePts.set(
-          k,
-          pts.map((p) => ({ x: p.x + centerDx, y: p.y + centerDy })),
-        );
-      }
     }
   }
 
@@ -361,33 +304,7 @@ export const buildScene = (
     skeleton.push(skel as Skel);
   }
 
-  // Pre-compute a lane index for each back-edge so that several
-  // simultaneously back-routed edges don't stack their vertical
-  // detour segments (and their labels) on top of each other. Lanes
-  // are assigned by the rightmost x of the wider of {from,to} box, so
-  // edges that originate further right get an outer lane.
-  const backEdgeLane = new Map<number, number>();
-  if (needsAutoLayout) {
-    const candidates: { idx: number; rightX: number }[] = [];
-    parsed.edges.forEach((e, idx) => {
-      if (e.kind === "elbow") return;
-      if (e.from === e.to) return;
-      const f = boxes.get(e.from);
-      const t = boxes.get(e.to);
-      if (!f || !t) return;
-      if (t.y + t.h <= f.y) {
-        candidates.push({ idx, rightX: Math.max(f.x + f.w, t.x + t.w) });
-      }
-    });
-    // Inner lane = leftmost rightX, so edges that already start far
-    // right end up on the outermost lane.
-    candidates.sort((a, b) => a.rightX - b.rightX);
-    candidates.forEach((c, i) => backEdgeLane.set(c.idx, i));
-  }
-
-  let edgeIndex = -1;
   for (const e of parsed.edges) {
-    edgeIndex++;
     const fromBox = boxes.get(e.from);
     const toBox = boxes.get(e.to);
     const isElbow = e.kind === "elbow";
@@ -461,7 +378,6 @@ export const buildScene = (
       };
       let start: { x: number; y: number };
       let end: { x: number; y: number };
-      let waypoints: { x: number; y: number }[] | undefined;
       // Back-edge in auto-layout: target sits above the source. Routing a
       // straight arrow would cut through any nodes ranked between them.
       // Re-route around the right side as a 3-segment unbound polyline.
@@ -471,23 +387,10 @@ export const buildScene = (
         toBox.y + toBox.h <= fromBox.y &&
         e.from !== e.to;
       if (isBackEdge) {
-        const lane = backEdgeLane.get(edgeIndex) ?? 0;
-        // Detour around ALL boxes — not just from/to — so the
-        // horizontal segments don't cut through unrelated nodes that
-        // happen to share a rank with from or to.
-        let maxRight = 0;
-        let maxBottom = 0;
-        for (const b of boxes.values()) {
-          if (b.x + b.w > maxRight) maxRight = b.x + b.w;
-          if (b.y + b.h > maxBottom) maxBottom = b.y + b.h;
-        }
-        const detourX = maxRight + 48 + lane * 40;
-        const yBelow = maxBottom + 30 + lane * 16;
-        const startAnchor = sideAnchor(fromBox, "bottom");
-        const endAnchor = sideAnchor(toBox, "top");
-        // Lift the entry into toBox into the inter-rank gap so the
-        // left-traveling segment doesn't shave the top of toBox's row.
-        const yLift = endAnchor.y - 30 - lane * 14;
+        const startAnchor = sideAnchor(fromBox, "right");
+        const endAnchor = sideAnchor(toBox, "right");
+        const detourX =
+          Math.max(fromBox.x + fromBox.w, toBox.x + toBox.w) + 40;
         const sx = startAnchor.x;
         const sy = startAnchor.y;
         const skel: Record<string, unknown> = {
@@ -496,23 +399,17 @@ export const buildScene = (
           y: sy,
           points: [
             [0, 0],
-            [0, yBelow - sy],
-            [detourX - sx, yBelow - sy],
-            [detourX - sx, yLift - sy],
-            [endAnchor.x - sx, yLift - sy],
+            [detourX - sx, 0],
+            [detourX - sx, endAnchor.y - sy],
             [endAnchor.x - sx, endAnchor.y - sy],
           ],
           strokeColor: "#1e1e1e",
         };
         if (e.label) {
-          // Center label on the vertical detour, staggered per lane
-          // so multiple back-edges never overlap.
-          const lines = e.label.split("\n");
-          const labelW = lines.reduce((m, l) => Math.max(m, l.length), 0) * 8;
           skeleton.push({
             type: "text",
-            x: detourX - labelW - 10,
-            y: (yBelow + yLift) / 2 - 10 + (lane % 2 === 0 ? 0 : 14),
+            x: detourX + 6,
+            y: (sy + endAnchor.y) / 2 - 10,
             text: e.label,
             fontSize: 16,
           } as Skel);
@@ -537,60 +434,8 @@ export const buildScene = (
         start = sideAnchor(fromBox, e.fromSide ?? autoFromSide);
         end = sideAnchor(toBox, e.toSide ?? autoToSide);
       } else {
-        // In an auto-laid-out scene, ranks flow top-to-bottom, so when
-        // the target sits in a downstream rank prefer entering from
-        // its TOP (and exiting from the source's BOTTOM). This gives
-        // clean perpendicular arrowheads on wide fan-outs / fan-ins
-        // where the closest-edge clip would otherwise hit a side.
-        const downstream =
-          needsAutoLayout && toBox.y >= fromBox.y + fromBox.h + 8;
-        if (downstream) {
-          start = sideAnchor(fromBox, "bottom");
-          end = sideAnchor(toBox, "top");
-          // If the straight line would cut through any unrelated node,
-          // try to detour via dagre's routed waypoints (which were
-          // computed to minimise crossings during ordering).
-          let crosses = false;
-          for (const [id, b] of boxes) {
-            if (id === e.from || id === e.to) continue;
-            if (segmentCrossesBox(start.x, start.y, end.x, end.y, b)) {
-              crosses = true;
-              break;
-            }
-          }
-          if (crosses) {
-            const pts = dagrePts.get(`${e.from}->${e.to}`);
-            if (pts && pts.length >= 3) {
-              // dagre's first/last point sit near the source/target
-              // centres; we keep our own anchor clips on the boundary
-              // and inject the intermediate waypoints in between.
-              waypoints = pts.slice(1, -1);
-              // If any waypoint still lands inside another box, shove
-              // it sideways to the nearest column gap.
-              for (let i = 0; i < waypoints.length; i++) {
-                const wp = waypoints[i];
-                for (const [id, b] of boxes) {
-                  if (id === e.from || id === e.to) continue;
-                  if (
-                    wp.x > b.x - 4 &&
-                    wp.x < b.x + b.w + 4 &&
-                    wp.y > b.y - 4 &&
-                    wp.y < b.y + b.h + 4
-                  ) {
-                    // Pick the closer side of `b` and push past it.
-                    const leftGap = wp.x - b.x;
-                    const rightGap = b.x + b.w - wp.x;
-                    if (leftGap < rightGap) wp.x = b.x - 24;
-                    else wp.x = b.x + b.w + 24;
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          start = clipToShape(fromBox, tcx, tcy, STROKE_GAP);
-          end = clipToShape(toBox, fcx, fcy, STROKE_GAP);
-        }
+        start = clipToShape(fromBox, tcx, tcy, STROKE_GAP);
+        end = clipToShape(toBox, fcx, fcy, STROKE_GAP);
       }
       const sx = start.x;
       const sy = start.y;
@@ -603,16 +448,10 @@ export const buildScene = (
         y: sy,
         width: ex - sx,
         height: ey - sy,
-        points: waypoints && waypoints.length > 0 && !isElbow
-          ? [
-              [0, 0],
-              ...waypoints.map((w) => [w.x - sx, w.y - sy] as [number, number]),
-              [ex - sx, ey - sy],
-            ]
-          : [
-              [0, 0],
-              [ex - sx, ey - sy],
-            ],
+        points: [
+          [0, 0],
+          [ex - sx, ey - sy],
+        ],
         strokeColor: "#1e1e1e",
         start: { id: e.from },
         end: { id: e.to },
