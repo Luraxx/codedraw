@@ -304,7 +304,196 @@ export const buildScene = (
     skeleton.push(skel as Skel);
   }
 
-  for (const e of parsed.edges) {
+  // ─────────────────────────────────────────────────────────────────
+  // Edge routing pre-pass: smart side selection + anchor distribution
+  //
+  // For every bound, straight-or-line, non-self-loop edge we pick the
+  // cardinal side of `from` that faces `to` (and vice versa) using a
+  // gap-aware heuristic that respects axis overlap. Then we group all
+  // edges by `(nodeId, side)` and slide their anchors along the side so
+  // that multiple arrows leaving / entering the same face never stack
+  // on top of each other. Self-loops pick the least-used side instead
+  // of always sitting on top.
+  // ─────────────────────────────────────────────────────────────────
+  type SideName = "top" | "right" | "bottom" | "left";
+  const SIDES: readonly SideName[] = ["top", "right", "bottom", "left"];
+  const sideAnchorCenter = (
+    box: NodeBox,
+    side: SideName,
+  ): { x: number; y: number } => {
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    switch (side) {
+      case "top":    return { x: cx, y: box.y - STROKE_GAP };
+      case "bottom": return { x: cx, y: box.y + box.h + STROKE_GAP };
+      case "left":   return { x: box.x - STROKE_GAP, y: cy };
+      case "right":  return { x: box.x + box.w + STROKE_GAP, y: cy };
+    }
+  };
+  /**
+   * Place the i-th anchor (of n total) along `side` of `box`.
+   * Top / bottom spread horizontally; left / right spread vertically.
+   * Indexes are 1-based-style: `i = 0..n-1` maps to fractions
+   * `1/(n+1) .. n/(n+1)` so a single edge sits on the midpoint.
+   */
+  const sideAnchorAt = (
+    box: NodeBox,
+    side: SideName,
+    i: number,
+    n: number,
+  ): { x: number; y: number } => {
+    const frac = (i + 1) / (n + 1);
+    // Keep anchors away from the box corners (rough/diamond shapes look
+    // ugly when arrows tuck into a vertex). 18 px of inset works for
+    // typical 80-100 px tall boxes.
+    const inset = 18;
+    const innerW = Math.max(0, box.w - inset * 2);
+    const innerH = Math.max(0, box.h - inset * 2);
+    switch (side) {
+      case "top":
+        return { x: box.x + inset + innerW * frac, y: box.y - STROKE_GAP };
+      case "bottom":
+        return {
+          x: box.x + inset + innerW * frac,
+          y: box.y + box.h + STROKE_GAP,
+        };
+      case "left":
+        return { x: box.x - STROKE_GAP, y: box.y + inset + innerH * frac };
+      case "right":
+        return {
+          x: box.x + box.w + STROKE_GAP,
+          y: box.y + inset + innerH * frac,
+        };
+    }
+  };
+  /** Outward-pointing unit normal of a side (used for sort keys). */
+  const sideNormal = (
+    side: SideName,
+  ): { dx: number; dy: number } => {
+    switch (side) {
+      case "top":    return { dx: 0, dy: -1 };
+      case "bottom": return { dx: 0, dy: 1 };
+      case "left":   return { dx: -1, dy: 0 };
+      case "right":  return { dx: 1, dy: 0 };
+    }
+  };
+  /**
+   * Pick which side of `from` faces `to`. Uses the *gap* between boxes
+   * on each axis instead of just the centre-to-centre direction, so:
+   *  - When boxes overlap horizontally we always exit top/bottom.
+   *  - When boxes overlap vertically we always exit left/right.
+   *  - Otherwise we pick the axis with the *larger* clear gap (the
+   *    most open path) — matches how humans route arrows by hand.
+   */
+  const chooseSide = (from: NodeBox, to: NodeBox): SideName => {
+    const fcx = from.x + from.w / 2;
+    const fcy = from.y + from.h / 2;
+    const tcx = to.x + to.w / 2;
+    const tcy = to.y + to.h / 2;
+    const dx = tcx - fcx;
+    const dy = tcy - fcy;
+    const gapH =
+      dx > 0 ? to.x - (from.x + from.w) : from.x - (to.x + to.w);
+    const gapV =
+      dy > 0 ? to.y - (from.y + from.h) : from.y - (to.y + to.h);
+    if (gapH < 0 && gapV >= 0) return dy >= 0 ? "bottom" : "top";
+    if (gapV < 0 && gapH >= 0) return dx >= 0 ? "right" : "left";
+    if (gapH < 0 && gapV < 0) {
+      return Math.abs(dx) > Math.abs(dy)
+        ? dx >= 0 ? "right" : "left"
+        : dy >= 0 ? "bottom" : "top";
+    }
+    return gapH >= gapV
+      ? dx >= 0 ? "right" : "left"
+      : dy >= 0 ? "bottom" : "top";
+  };
+
+  // Pre-compute desired sides for each edge so we can do per-side
+  // distribution afterwards. Elbow edges, self-loops and back-edges
+  // are handled separately further down and don't participate here.
+  interface EdgePlan {
+    fromSide: SideName;
+    toSide: SideName;
+    fromAnchor: { x: number; y: number };
+    toAnchor: { x: number; y: number };
+  }
+  const edgePlans: (EdgePlan | undefined)[] = new Array(parsed.edges.length);
+  // Per (nodeId, side) → list of edges anchored to it, each tagged with
+  // the *other* endpoint's centre so we can sort the entries naturally.
+  interface UsageEntry {
+    edgeIdx: number;
+    endpoint: "from" | "to";
+    otherCx: number;
+    otherCy: number;
+  }
+  const usage = new Map<string, UsageEntry[]>();
+  const usageKey = (id: string, side: SideName): string => `${id}\u0000${side}`;
+
+  for (let i = 0; i < parsed.edges.length; i++) {
+    const e = parsed.edges[i];
+    if (e.kind === "elbow") continue;
+    if (e.from === e.to) continue;
+    const fb = boxes.get(e.from);
+    const tb = boxes.get(e.to);
+    if (!fb || !tb) continue;
+    // Back-edges (target above source in auto-layout) use the existing
+    // detour routing, not the smart anchor logic.
+    if (needsAutoLayout && tb.y + tb.h <= fb.y) continue;
+    const fromSide: SideName = e.fromSide ?? chooseSide(fb, tb);
+    const toSide: SideName = e.toSide ?? chooseSide(tb, fb);
+    edgePlans[i] = {
+      fromSide,
+      toSide,
+      fromAnchor: sideAnchorCenter(fb, fromSide),
+      toAnchor: sideAnchorCenter(tb, toSide),
+    };
+    const fbCx = fb.x + fb.w / 2;
+    const fbCy = fb.y + fb.h / 2;
+    const tbCx = tb.x + tb.w / 2;
+    const tbCy = tb.y + tb.h / 2;
+    const kf = usageKey(e.from, fromSide);
+    const kt = usageKey(e.to, toSide);
+    (usage.get(kf) ?? usage.set(kf, []).get(kf)!).push({
+      edgeIdx: i,
+      endpoint: "from",
+      otherCx: tbCx,
+      otherCy: tbCy,
+    });
+    (usage.get(kt) ?? usage.set(kt, []).get(kt)!).push({
+      edgeIdx: i,
+      endpoint: "to",
+      otherCx: fbCx,
+      otherCy: fbCy,
+    });
+  }
+
+  // Distribute: for every side that has more than one anchor, sort the
+  // entries by the "natural" order along that side (horizontally for
+  // top/bottom, vertically for left/right) and slide each anchor along
+  // the side so they don't stack on the midpoint.
+  for (const [key, entries] of usage) {
+    if (entries.length <= 1) continue;
+    const sepIdx = key.indexOf("\u0000");
+    const nodeId = key.slice(0, sepIdx);
+    const side = key.slice(sepIdx + 1) as SideName;
+    const box = boxes.get(nodeId);
+    if (!box) continue;
+    const horizontal = side === "top" || side === "bottom";
+    entries.sort((a, b) =>
+      horizontal ? a.otherCx - b.otherCx : a.otherCy - b.otherCy,
+    );
+    for (let k = 0; k < entries.length; k++) {
+      const en = entries[k];
+      const anchor = sideAnchorAt(box, side, k, entries.length);
+      const plan = edgePlans[en.edgeIdx];
+      if (!plan) continue;
+      if (en.endpoint === "from") plan.fromAnchor = anchor;
+      else plan.toAnchor = anchor;
+    }
+  }
+
+  for (let edgeIdx = 0; edgeIdx < parsed.edges.length; edgeIdx++) {
+    const e = parsed.edges[edgeIdx];
     const fromBox = boxes.get(e.from);
     const toBox = boxes.get(e.to);
     const isElbow = e.kind === "elbow";
@@ -315,30 +504,85 @@ export const buildScene = (
       // Self-loop: Excalidraw can't auto-route start==end on the same
       // node, so emit an unbound polyline that arcs above the node.
       if (e.from === e.to) {
-        const sx = fromBox.x + fromBox.w * 0.35;
-        const sy = fromBox.y - STROKE_GAP;
-        const loopH = 40;
-        const loopW = fromBox.w * 0.3;
+        // Pick a side with little / no other edge traffic so the loop
+        // doesn't collide with the regular arrows. Default order
+        // prefers top → right → bottom → left.
+        const candidates: SideName[] = e.fromSide
+          ? [e.fromSide]
+          : (["top", "right", "bottom", "left"] as SideName[]);
+        let chosenSide: SideName = candidates[0];
+        let bestLoad = Infinity;
+        for (const s of candidates) {
+          const load = (usage.get(usageKey(e.from, s)) ?? []).length;
+          if (load < bestLoad) {
+            bestLoad = load;
+            chosenSide = s;
+          }
+        }
+        const loopExtent = 40;
+        const buildLoop = (side: SideName): {
+          sx: number;
+          sy: number;
+          pts: [number, number][];
+          labelX: number;
+          labelY: number;
+        } => {
+          const half = (side === "top" || side === "bottom"
+            ? fromBox.w
+            : fromBox.h) * 0.3;
+          if (side === "top") {
+            const sx = fromBox.x + fromBox.w * 0.35;
+            const sy = fromBox.y - STROKE_GAP;
+            return {
+              sx, sy,
+              pts: [[0, 0], [0, -loopExtent], [half, -loopExtent], [half, 0]],
+              labelX: sx + half / 2,
+              labelY: sy - loopExtent - 22,
+            };
+          }
+          if (side === "bottom") {
+            const sx = fromBox.x + fromBox.w * 0.35;
+            const sy = fromBox.y + fromBox.h + STROKE_GAP;
+            return {
+              sx, sy,
+              pts: [[0, 0], [0, loopExtent], [half, loopExtent], [half, 0]],
+              labelX: sx + half / 2,
+              labelY: sy + loopExtent + 6,
+            };
+          }
+          if (side === "right") {
+            const sx = fromBox.x + fromBox.w + STROKE_GAP;
+            const sy = fromBox.y + fromBox.h * 0.35;
+            return {
+              sx, sy,
+              pts: [[0, 0], [loopExtent, 0], [loopExtent, half], [0, half]],
+              labelX: sx + loopExtent + 6,
+              labelY: sy + half / 2 - 10,
+            };
+          }
+          // left
+          const sx = fromBox.x - STROKE_GAP;
+          const sy = fromBox.y + fromBox.h * 0.35;
+          return {
+            sx, sy,
+            pts: [[0, 0], [-loopExtent, 0], [-loopExtent, half], [0, half]],
+            labelX: sx - loopExtent - 6 - (e.label?.length ?? 0) * 8,
+            labelY: sy + half / 2 - 10,
+          };
+        };
+        const built = buildLoop(chosenSide);
         const skel: Record<string, unknown> = {
           type,
-          x: sx,
-          y: sy,
-          points: [
-            [0, 0],
-            [0, -loopH],
-            [loopW, -loopH],
-            [loopW, 0],
-          ],
+          x: built.sx,
+          y: built.sy,
+          points: built.pts,
           strokeColor: "#1e1e1e",
         };
-        if (isElbow) {
-          // Elbow router with manual points: keep as plain polyline.
-        }
         if (e.label) {
           skeleton.push({
             type: "text",
-            x: sx + loopW / 2 - (e.label.length * 5),
-            y: sy - loopH - 22,
+            x: built.labelX - (e.label.length * 5),
+            y: built.labelY,
             text: e.label,
             fontSize: 16,
           } as Skel);
@@ -434,8 +678,14 @@ export const buildScene = (
         start = sideAnchor(fromBox, e.fromSide ?? autoFromSide);
         end = sideAnchor(toBox, e.toSide ?? autoToSide);
       } else {
-        start = clipToShape(fromBox, tcx, tcy, STROKE_GAP);
-        end = clipToShape(toBox, fcx, fcy, STROKE_GAP);
+        const plan = edgePlans[edgeIdx];
+        if (plan) {
+          start = plan.fromAnchor;
+          end = plan.toAnchor;
+        } else {
+          start = clipToShape(fromBox, tcx, tcy, STROKE_GAP);
+          end = clipToShape(toBox, fcx, fcy, STROKE_GAP);
+        }
       }
       const sx = start.x;
       const sy = start.y;
