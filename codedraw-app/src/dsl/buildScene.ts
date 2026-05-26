@@ -384,6 +384,15 @@ export const buildScene = (
    * the user has explicit `at:` coordinates and no global flow direction.
    */
   const faceHit = (from: NodeBox, to: NodeBox): SideName => {
+    // Prefer the horizontal face when the target box sits fully to the
+    // right / left of the source box — this matches human intuition for
+    // services-in-columns layouts where a slight vertical offset would
+    // otherwise flip the anchor onto the top/bottom face.
+    if (to.x >= from.x + from.w) return "right";
+    if (to.x + to.w <= from.x) return "left";
+    if (to.y >= from.y + from.h) return "bottom";
+    if (to.y + to.h <= from.y) return "top";
+    // Boxes overlap on both axes — fall back to aspect-ratio normalised angle.
     const dx = (to.x + to.w / 2) - (from.x + from.w / 2);
     const dy = (to.y + to.h / 2) - (from.y + from.h / 2);
     const hw = Math.max(1, from.w / 2);
