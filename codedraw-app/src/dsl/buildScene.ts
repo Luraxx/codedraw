@@ -484,6 +484,105 @@ export const buildScene = (
     });
   }
 
+  // Second pre-pass: back-edges. Each is routed through the right gutter,
+  // but multiple back-edges sharing a target / overlapping bands would
+  // collide (same bus y, same detour x, same target anchor). Stagger them
+  // so each gets its own riser and the target entry points spread along
+  // the right side. We also mark source.right + target.right as "used"
+  // in the usage map so self-loops know to pick a different side.
+  interface BackEdgeRoute {
+    busY: number;
+    detourX: number;
+    sourceAnchor: { x: number; y: number };
+    targetAnchor: { x: number; y: number };
+  }
+  const backEdgeRoutes: (BackEdgeRoute | undefined)[] = new Array(
+    parsed.edges.length,
+  );
+  // First pass: collect back-edges per target (for entry distribution).
+  const backEdgesByTarget = new Map<string, number[]>();
+  const isBackEdgeIdx: boolean[] = new Array(parsed.edges.length).fill(false);
+  for (let i = 0; i < parsed.edges.length; i++) {
+    const e = parsed.edges[i];
+    if (e.kind === "elbow") continue;
+    if (e.from === e.to) continue;
+    const fb = boxes.get(e.from);
+    const tb = boxes.get(e.to);
+    if (!fb || !tb) continue;
+    if (!(needsAutoLayout && tb.y + tb.h <= fb.y)) continue;
+    isBackEdgeIdx[i] = true;
+    const list = backEdgesByTarget.get(e.to) ?? [];
+    list.push(i);
+    backEdgesByTarget.set(e.to, list);
+    // Reserve right side on both endpoints so self-loops avoid it.
+    const krf = usageKey(e.from, "right");
+    const krt = usageKey(e.to, "right");
+    (usage.get(krf) ?? usage.set(krf, []).get(krf)!).push({
+      edgeIdx: i,
+      endpoint: "from",
+      otherCx: tb.x + tb.w / 2,
+      otherCy: tb.y + tb.h / 2,
+    });
+    (usage.get(krt) ?? usage.set(krt, []).get(krt)!).push({
+      edgeIdx: i,
+      endpoint: "to",
+      otherCx: fb.x + fb.w / 2,
+      otherCy: fb.y + fb.h / 2,
+    });
+  }
+  // Second pass: compute staggered routes per back-edge.
+  let backEdgeOrder = 0;
+  for (const [targetId, idxList] of backEdgesByTarget) {
+    const tb = boxes.get(targetId);
+    if (!tb) continue;
+    // Sort entries by source y (top-most source enters higher on right side).
+    idxList.sort((a, b) => {
+      const sa = boxes.get(parsed.edges[a].from);
+      const sb = boxes.get(parsed.edges[b].from);
+      return (sa?.y ?? 0) - (sb?.y ?? 0);
+    });
+    for (let k = 0; k < idxList.length; k++) {
+      const idx = idxList[k];
+      const e = parsed.edges[idx];
+      const fb = boxes.get(e.from)!;
+      const bandTop = Math.min(tb.y, fb.y) - 8;
+      const bandBot = Math.max(tb.y + tb.h, fb.y + fb.h);
+      let detourX = Math.max(fb.x + fb.w, tb.x + tb.w) + 40;
+      let busY = bandBot + 36;
+      for (const other of boxes.values()) {
+        if (other === fb || other === tb) continue;
+        const overlapsBand = !(
+          other.y + other.h < bandTop || other.y > bandBot + 80
+        );
+        if (!overlapsBand) continue;
+        if (other.x + other.w + 40 > detourX) {
+          detourX = other.x + other.w + 40;
+        }
+        if (other.y + other.h + 36 > busY) {
+          busY = other.y + other.h + 36;
+        }
+      }
+      // Stagger this back-edge's riser & bus so it doesn't collide with
+      // siblings entering the same target or others sharing the gutter.
+      // Outer (later) edges sit further out / lower.
+      const lane = backEdgeOrder++;
+      detourX += lane * 18;
+      busY += lane * 14;
+      // Distribute the target entry along its right side.
+      const targetAnchor = sideAnchorAt(tb, "right", k, idxList.length);
+      const sourceAnchor = {
+        x: fb.x + fb.w / 2,
+        y: fb.y + fb.h + STROKE_GAP,
+      };
+      backEdgeRoutes[idx] = {
+        busY,
+        detourX,
+        sourceAnchor,
+        targetAnchor,
+      };
+    }
+  }
+
   // Distribute: for every side that has more than one anchor, sort the
   // entries by the "natural" order along that side (horizontally for
   // top/bottom, vertically for left/right) and slide each anchor along
@@ -648,19 +747,22 @@ export const buildScene = (
         toBox.y + toBox.h <= fromBox.y &&
         e.from !== e.to;
       if (isBackEdge) {
-        const startAnchor = sideAnchor(fromBox, "right");
-        const endAnchor = sideAnchor(toBox, "right");
+        const route = backEdgeRoutes[edgeIdx];
+        const endAnchor = route?.targetAnchor ?? sideAnchor(toBox, "right");
+        const sx = route?.sourceAnchor.x ?? (fromBox.x + fromBox.w / 2);
+        const sy = route?.sourceAnchor.y ?? (fromBox.y + fromBox.h + STROKE_GAP);
+        const busY = route?.busY ?? (fromBox.y + fromBox.h + 36);
         const detourX =
+          route?.detourX ??
           Math.max(fromBox.x + fromBox.w, toBox.x + toBox.w) + 40;
-        const sx = startAnchor.x;
-        const sy = startAnchor.y;
         const skel: Record<string, unknown> = {
           type,
           x: sx,
           y: sy,
           points: [
             [0, 0],
-            [detourX - sx, 0],
+            [0, busY - sy],
+            [detourX - sx, busY - sy],
             [detourX - sx, endAnchor.y - sy],
             [endAnchor.x - sx, endAnchor.y - sy],
           ],
@@ -670,7 +772,7 @@ export const buildScene = (
           skeleton.push({
             type: "text",
             x: detourX + 6,
-            y: (sy + endAnchor.y) / 2 - 10,
+            y: (busY + endAnchor.y) / 2 - 10,
             text: e.label,
             fontSize: 16,
           } as Skel);
