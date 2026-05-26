@@ -378,34 +378,50 @@ export const buildScene = (
     }
   };
   /**
-   * Pick which side of `from` faces `to`. Uses the *gap* between boxes
-   * on each axis instead of just the centre-to-centre direction, so:
-   *  - When boxes overlap horizontally we always exit top/bottom.
-   *  - When boxes overlap vertically we always exit left/right.
-   *  - Otherwise we pick the axis with the *larger* clear gap (the
-   *    most open path) — matches how humans route arrows by hand.
+   * Pick the cardinal side of `from` that faces `to`, normalized by the
+   * box's aspect ratio (a "face-hit" decision — which face does the ray
+   * from centre to other exit?). Used for free-positioned diagrams where
+   * the user has explicit `at:` coordinates and no global flow direction.
    */
-  const chooseSide = (from: NodeBox, to: NodeBox): SideName => {
-    const fcx = from.x + from.w / 2;
-    const fcy = from.y + from.h / 2;
-    const tcx = to.x + to.w / 2;
-    const tcy = to.y + to.h / 2;
-    const dx = tcx - fcx;
-    const dy = tcy - fcy;
-    const gapH =
-      dx > 0 ? to.x - (from.x + from.w) : from.x - (to.x + to.w);
-    const gapV =
-      dy > 0 ? to.y - (from.y + from.h) : from.y - (to.y + to.h);
-    if (gapH < 0 && gapV >= 0) return dy >= 0 ? "bottom" : "top";
-    if (gapV < 0 && gapH >= 0) return dx >= 0 ? "right" : "left";
-    if (gapH < 0 && gapV < 0) {
-      return Math.abs(dx) > Math.abs(dy)
-        ? dx >= 0 ? "right" : "left"
-        : dy >= 0 ? "bottom" : "top";
+  const faceHit = (from: NodeBox, to: NodeBox): SideName => {
+    const dx = (to.x + to.w / 2) - (from.x + from.w / 2);
+    const dy = (to.y + to.h / 2) - (from.y + from.h / 2);
+    const hw = Math.max(1, from.w / 2);
+    const hh = Math.max(1, from.h / 2);
+    if (Math.abs(dx) / hw > Math.abs(dy) / hh) {
+      return dx >= 0 ? "right" : "left";
     }
-    return gapH >= gapV
-      ? dx >= 0 ? "right" : "left"
-      : dy >= 0 ? "bottom" : "top";
+    return dy >= 0 ? "bottom" : "top";
+  };
+  /**
+   * Pick the from/to side pair for an edge.
+   *
+   * Decision tree:
+   *  1. Under TB auto-layout the flow direction is vertical by construction.
+   *     A forward edge (target's top strictly below source's bottom) ALWAYS
+   *     exits the source's `bottom` and enters the target's `top`. This is
+   *     the convention every human draws for top-down trees / flowcharts,
+   *     and the per-side distribution keeps fan-outs visually clean.
+   *  2. Same-rank auto-layout edges (y-ranges overlap) use horizontal sides.
+   *  3. Pinned diagrams fall back to per-end `faceHit`, which lets sideways
+   *     dense column graphs (e.g. the boss diagram) exit through the side
+   *     facing the target instead of always going down.
+   */
+  const chooseSides = (
+    from: NodeBox,
+    to: NodeBox,
+  ): { fromSide: SideName; toSide: SideName } => {
+    if (needsAutoLayout) {
+      const tBelow = to.y >= from.y + from.h;
+      const tAbove = to.y + to.h <= from.y;
+      if (tBelow) return { fromSide: "bottom", toSide: "top" };
+      if (tAbove) return { fromSide: "top", toSide: "bottom" };
+      const dx = (to.x + to.w / 2) - (from.x + from.w / 2);
+      return dx >= 0
+        ? { fromSide: "right", toSide: "left" }
+        : { fromSide: "left", toSide: "right" };
+    }
+    return { fromSide: faceHit(from, to), toSide: faceHit(to, from) };
   };
 
   // Pre-compute desired sides for each edge so we can do per-side
@@ -439,8 +455,9 @@ export const buildScene = (
     // Back-edges (target above source in auto-layout) use the existing
     // detour routing, not the smart anchor logic.
     if (needsAutoLayout && tb.y + tb.h <= fb.y) continue;
-    const fromSide: SideName = e.fromSide ?? chooseSide(fb, tb);
-    const toSide: SideName = e.toSide ?? chooseSide(tb, fb);
+    const sides = chooseSides(fb, tb);
+    const fromSide: SideName = e.fromSide ?? sides.fromSide;
+    const toSide: SideName = e.toSide ?? sides.toSide;
     edgePlans[i] = {
       fromSide,
       toSide,
