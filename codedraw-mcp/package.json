@@ -4,11 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "tsx src/index.ts"
+    "build:widget": "vite build",
+    "dev": "npm run build:widget && tsx watch src/index.ts",
+    "build": "npm run build:widget && tsc -p tsconfig.json",
+    "start": "npm run build:widget && tsx src/index.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.4",
     "@modelcontextprotocol/sdk": "1.29.0",
     "express": "4.21.2",
     "tsx": "4.19.2",
@@ -17,6 +19,8 @@
   "devDependencies": {
     "@types/express": "5.0.0",
     "@types/node": "20.11.30",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vite": "^5.4.21",
+    "vite-plugin-singlefile": "2.3.3"
   }
 }

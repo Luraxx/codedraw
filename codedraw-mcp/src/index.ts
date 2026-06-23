@@ -11,6 +11,8 @@
 
 import express, { type Request, type Response as ExpressResponse } from "express";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -132,237 +134,33 @@ const extractPngDims = (buf: Buffer): { width?: number; height?: number } => {
 };
 
 // ────────────────────────────────────────────────────────────
-// ChatGPT Apps SDK UI widget HTML
+// MCP App UI widget HTML
 //
-// Served as an MCP resource at WIDGET_URI. ChatGPT (and other Apps SDK
-// hosts) load it via resources/read against the ui:// URI returned by
-// the tool's openai/outputTemplate _meta key.
+// Served as an MCP resource at WIDGET_URI. Hosts load it via resources/read
+// against the ui:// URI advertised by the tool's `_meta.ui.resourceUri`
+// (Claude / MCP Apps standard) and `openai/outputTemplate` (ChatGPT). The
+// widget then performs the MCP Apps handshake to receive the tool result.
 // ────────────────────────────────────────────────────────────
-const WIDGET_URI = "ui://widget/codedraw-preview-v7.html";
-const WIDGET_HTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>CodeDraw preview</title>
-<style>
-  :root{
-    --fg:#1e1e1e; --muted:#666; --bg:transparent;
-    --btn-bg:#f1f3f5; --btn-fg:#1e1e1e; --btn-border:#dee2e6;
-    --btn-hover:#e9ecef; --btn-ok:#37b24d;
+const WIDGET_URI = "ui://widget/codedraw-preview-v8.html";
+
+// The widget markup is built from src/widget/ (TypeScript + the official
+// @modelcontextprotocol/ext-apps `App` client) into a single, self-contained
+// HTML file by Vite (`npm run build:widget`). We read it once at startup and
+// serve it as the ui:// resource below. Bump the -vN suffix in WIDGET_URI
+// whenever the widget changes so hosts re-fetch it instead of serving a cached
+// copy.
+const WIDGET_HTML = ((): string => {
+  const file = fileURLToPath(new URL("../dist/widget/index.html", import.meta.url));
+  try {
+    return readFileSync(file, "utf8");
+  } catch (err) {
+    throw new Error(
+      `Widget bundle not found at ${file}. Run "npm run build:widget" first ` +
+        `(it runs automatically via the "start"/"dev" scripts and in the Docker image). ` +
+        `Cause: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
-  @media (prefers-color-scheme: dark){
-    :root{ --fg:#e6e6e6; --muted:#999;
-           --btn-bg:#2b2f33; --btn-fg:#e6e6e6; --btn-border:#3a3f44;
-           --btn-hover:#3a3f44; --btn-ok:#69db7c; }
-  }
-  html,body{margin:0;padding:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--fg)}
-  #wrap{display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box}
-  #preview{display:flex;align-items:center;justify-content:center;min-height:180px;border-radius:6px}
-  #preview img{max-width:100%;height:auto;display:block}
-  #preview pre{white-space:pre-wrap;font-size:11px;margin:0;width:100%;max-height:340px;overflow:auto}
-  #empty{font-size:13px;color:var(--muted);padding:24px}
-  #bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
-  #bar .spacer{flex:1}
-  button, a.btn{
-    appearance:none;border:1px solid var(--btn-border);background:var(--btn-bg);color:var(--btn-fg);
-    padding:5px 10px;border-radius:5px;font-size:12px;cursor:pointer;text-decoration:none;line-height:1.2;
-  }
-  button:hover, a.btn:hover{background:var(--btn-hover)}
-  button.copied{color:var(--btn-ok);border-color:var(--btn-ok)}
-</style>
-</head>
-<body>
-<div id="wrap">
-  <div id="preview"><div id="empty">No diagram yet.</div></div>
-  <div id="bar" hidden>
-    <span id="dims"></span>
-    <span class="spacer"></span>
-    <a class="btn" id="dlSvg" hidden>Download SVG</a>
-    <a class="btn" id="dlPng" hidden>Download PNG</a>
-    <button id="copySvg" hidden>Copy SVG</button>
-  </div>
-</div>
-<script>
-(function(){
-  var preview = document.getElementById("preview");
-  var bar     = document.getElementById("bar");
-  var dimsEl  = document.getElementById("dims");
-  var dlSvg   = document.getElementById("dlSvg");
-  var dlPng   = document.getElementById("dlPng");
-  var copyBtn = document.getElementById("copySvg");
-  var lastSvg = null;
-  var lastBlobUrl = null;
-
-  function makeSvgUrl(svg){
-    if(lastBlobUrl){ try { URL.revokeObjectURL(lastBlobUrl); } catch(_){} }
-    var blob = new Blob([svg], { type: "image/svg+xml" });
-    lastBlobUrl = URL.createObjectURL(blob);
-    return lastBlobUrl;
-  }
-
-  function setDims(out){
-    if(out && out.width && out.height){
-      dimsEl.textContent = Math.round(out.width) + " × " + Math.round(out.height) + " px";
-    } else {
-      dimsEl.textContent = "";
-    }
-  }
-
-  function setDownloads(out){
-    var dls = (out && out.downloads) || {};
-    if(dls.svgUrl){ dlSvg.href = dls.svgUrl; dlSvg.hidden = false; dlSvg.setAttribute("download",""); dlSvg.target="_blank"; dlSvg.rel="noopener"; }
-    else { dlSvg.hidden = true; }
-    if(dls.pngUrl){ dlPng.href = dls.pngUrl; dlPng.hidden = false; dlPng.setAttribute("download",""); dlPng.target="_blank"; dlPng.rel="noopener"; }
-    else { dlPng.hidden = true; }
-    copyBtn.hidden = !lastSvg;
-    bar.hidden = (dlSvg.hidden && dlPng.hidden && copyBtn.hidden && !dimsEl.textContent);
-  }
-
-  function renderSvg(svgText, out){
-    lastSvg = svgText;
-    var url = makeSvgUrl(svgText);
-    var img = document.createElement("img");
-    img.alt = "CodeDraw diagram";
-    img.src = url;
-    preview.innerHTML = "";
-    preview.appendChild(img);
-    setDims(out);
-    setDownloads(out);
-  }
-
-  function renderPng(b64, out){
-    lastSvg = null;
-    var img = document.createElement("img");
-    img.alt = "CodeDraw diagram";
-    img.src = "data:image/png;base64," + b64;
-    if(out && out.width)  img.width  = out.width;
-    if(out && out.height) img.height = out.height;
-    preview.innerHTML = "";
-    preview.appendChild(img);
-    setDims(out);
-    setDownloads(out);
-  }
-
-  function renderJson(out){
-    lastSvg = null;
-    var pre = document.createElement("pre");
-    pre.textContent = JSON.stringify(out && out.scene, null, 2);
-    preview.innerHTML = "";
-    preview.appendChild(pre);
-    setDims(out);
-    setDownloads(out);
-  }
-
-  function render(out){
-    if(!out) return;
-    // Prefer SVG payload whenever present — even for format=png we may have
-    // both, and SVG is sharper / scriptable for the widget surface.
-    if(typeof out.svg === "string" && out.svg.length){
-      renderSvg(out.svg, out);
-      return;
-    }
-    if((out.format === "png") && typeof (out.pngBase64 || out.png) === "string"){
-      renderPng(out.pngBase64 || out.png, out);
-      return;
-    }
-    if(out.format === "json"){
-      renderJson(out);
-      return;
-    }
-  }
-
-  copyBtn.addEventListener("click", function(){
-    if(!lastSvg || !navigator.clipboard) return;
-    navigator.clipboard.writeText(lastSvg).then(function(){
-      copyBtn.textContent = "Copied";
-      copyBtn.classList.add("copied");
-      setTimeout(function(){
-        copyBtn.textContent = "Copy SVG";
-        copyBtn.classList.remove("copied");
-      }, 1500);
-    }).catch(function(){});
-  });
-
-  function fromToolResult(params){
-    if(!params) return;
-    var sc = params.structuredContent || params.toolOutput || {};
-    var meta = params._meta || {};
-    // Merge: structuredContent stays small (sent to model); _meta carries
-    // the heavy svg / pngBase64 payloads exclusively for the widget.
-    var merged = {};
-    for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
-    for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
-    if(merged.format || merged.svg || merged.pngBase64) render(merged);
-  }
-
-  var rendered = false;
-
-  function tryRenderFromGlobals(){
-    if(rendered) return true;
-    try {
-      var w = (typeof window !== "undefined") ? window.openai : null;
-      if(!w) return false;
-      var sc = w.toolOutput || {};
-      var meta = w.toolResponseMetadata || w._meta || {};
-      var merged = {};
-      for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
-      for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
-      if(merged.format || merged.svg || merged.pngBase64){
-        render(merged);
-        rendered = true;
-        return true;
-      }
-    } catch(_){}
-    return false;
-  }
-
-  // Initial attempt (fast path when globals are already populated, e.g. on
-  // page reload where ChatGPT replays the tool result before our script runs).
-  tryRenderFromGlobals();
-
-  // Slow path: window.openai is typically populated AFTER the first script
-  // turn during the bridge handshake. Poll briefly until it appears.
-  if(!rendered){
-    var tries = 0;
-    var iv = setInterval(function(){
-      if(tryRenderFromGlobals() || ++tries > 80){ clearInterval(iv); }
-    }, 75);
-  }
-
-  window.addEventListener("message", function(event){
-    if(event.source !== window.parent) return;
-    var msg = event.data;
-    if(!msg || msg.jsonrpc !== "2.0") return;
-    if(msg.method === "ui/notifications/tool-result"){
-      rendered = true;
-      fromToolResult(msg.params);
-    }
-  }, { passive: true });
-
-  // ChatGPT fires this event whenever window.openai globals are mutated.
-  window.addEventListener("openai:set_globals", function(event){
-    var globals = (event && event.detail && event.detail.globals) || null;
-    if(globals && globals.toolOutput){
-      // Merge with current _meta if present.
-      var merged = {};
-      var sc = globals.toolOutput || {};
-      var meta = globals.toolResponseMetadata || (window.openai && window.openai.toolResponseMetadata) || {};
-      for(var k in sc){ if(Object.prototype.hasOwnProperty.call(sc,k)) merged[k] = sc[k]; }
-      for(var k2 in meta){ if(Object.prototype.hasOwnProperty.call(meta,k2)) merged[k2] = meta[k2]; }
-      if(merged.format || merged.svg || merged.pngBase64){
-        rendered = true;
-        render(merged);
-      }
-    } else {
-      // Fallback: re-read globals lazily.
-      tryRenderFromGlobals();
-    }
-  }, { passive: true });
 })();
-</script>
-</body>
-</html>`;
 
 const createServer = (baseUrl: string): McpServer => {
   const server = new McpServer({
@@ -371,7 +169,7 @@ const createServer = (baseUrl: string): McpServer => {
   });
 
   // ────────────────────────────────────────────────────────────
-  // ChatGPT Apps SDK UI widget — registered as an MCP resource.
+  // MCP App UI widget — registered as an MCP resource.
   // ────────────────────────────────────────────────────────────
   server.registerResource(
     "codedraw-preview",

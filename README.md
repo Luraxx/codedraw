@@ -124,14 +124,12 @@ Ask Claude, ChatGPT or Cursor: *"Draw a login flow"* — the agent writes DSL an
 | `get_grammar` | Full DSL reference |
 | `get_examples` | Named snippets for few-shot prompting |
 
-`render_diagram` `structuredContent` shape:
+`render_diagram` `structuredContent` shape (kept compact — it is also seen by the model):
 
 ```jsonc
 {
   "format": "svg",
   "width": 640, "height": 480,
-  "svg": "<svg …>",
-  "pngBase64": "iVBOR…",
   "downloads": {
     "svgUrl": "https://codedraw.dehlwes.net/mcp/downloads/svg/<id>",
     "pngUrl": "https://codedraw.dehlwes.net/mcp/downloads/png/<id>",
@@ -139,6 +137,8 @@ Ask Claude, ChatGPT or Cursor: *"Draw a login flow"* — the agent writes DSL an
   }
 }
 ```
+
+The rendered `svg` / `pngBase64` are delivered to the inline UI widget via the result `_meta` (heavy payload kept out of `structuredContent`). The widget renders them through the MCP Apps `App` handshake, so previews work in Claude as well as ChatGPT.
 
 ### ChatGPT (Developer-Mode connector)
 
